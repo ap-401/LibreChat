@@ -160,5 +160,8 @@
       "admin/",
       "packages/"
     ]
+  },
+  "dependencies": {
+    "vite-plugin-node-polyfills": "^0.2.0"
   }
 }

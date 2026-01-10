@@ -8,9 +8,13 @@ import terser from '@rollup/plugin-terser';
 
 const plugins = [
   peerDepsExternal(),
-  resolve(),
+  resolve({
+    browser: true,
+    preferBuiltins: false,
+  }),
   replace({
     __IS_DEV__: process.env.NODE_ENV === 'development',
+    preventAssignment: true,
   }),
   commonjs(),
   typescript({
