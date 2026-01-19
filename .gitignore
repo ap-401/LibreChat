@@ -171,3 +171,4 @@ claude-flow
 hive-mind-prompt-*.txt
 # Amplify files
 amplify_outputs.json
+.amplify/

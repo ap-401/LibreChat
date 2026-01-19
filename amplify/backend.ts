@@ -26,7 +26,7 @@ const LibreChatVpc = new ec2.Vpc(customResourceStack, 'LibreChatVpc', {
 // Create the Document DB cluster in the VPC
 new documentDb.DatabaseCluster(customResourceStack, 'LibreChatDatabase', {
   masterUser: {
-    username: 'admin',
+    username: 'libreAdmin',
   },
   vpc: LibreChatVpc,
   serverlessV2ScalingConfiguration: {
