@@ -1,5 +1,5 @@
-import * as documentDb from 'aws-cdk-lib/aws_docdb';
-import * as ec2 from 'aws-cdk-lib/aws_ec2';
+import * as documentDb from 'aws-cdk-lib/aws-docdb';
+import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import { defineBackend } from '@aws-amplify/backend';
 
 const backend = defineBackend({});
