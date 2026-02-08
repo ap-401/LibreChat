@@ -36,6 +36,7 @@ new documentDb.DatabaseCluster(customResourceStack, 'LibreChatDatabase-', {
     maxCapacity: 1,
   },
   engineVersion: '5.0.0', // Serverless requires engine version 5.0.0 or higher
+  deletionProtection: false,
 });
 // Create the DocumentDB Database Instance
 // declare const caCertificate: rds.CaCertificate; 
@@ -48,3 +49,9 @@ new documentDb.DatabaseCluster(customResourceStack, 'LibreChatDatabase-', {
 //   dbInstanceName: 'libreChatDbInstance',
 //   caCertificate: caCertificate,
 // });
+
+// Output created resources
+customResourceStack.addOutput({
+  outputName: 'DocumentDbClusterEndpoint',
+  value: 'LibreChatDatabase-.cluster-endpoint',
+});
