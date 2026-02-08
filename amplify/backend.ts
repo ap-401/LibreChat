@@ -26,8 +26,8 @@ const LibreChatVpc = new ec2.Vpc(customResourceStack, 'LibreChatVpc', {
   ]
 });
 // Create the DocumentDB cluster in the VPC
-new documentDb.DatabaseCluster(customResourceStack, 'LibreChatDatabase-', {
-  masterUser: {
+const LibreChatDb = new documentDb.DatabaseCluster(customResourceStack, 'LibreChatDatabase-', {
+  masterUser: { 
     username: 'libreAdmin',
   },
   vpc: LibreChatVpc,
@@ -51,7 +51,8 @@ new documentDb.DatabaseCluster(customResourceStack, 'LibreChatDatabase-', {
 // });
 
 // Output created resources
-customResourceStack.addOutput({
-  outputName: 'DocumentDbClusterEndpoint',
-  value: 'LibreChatDatabase-.cluster-endpoint',
+backend.addOutput({
+  custom: {
+    libreChatDbEndpoint: LibreChatDb.clusterEndpoint,
+  },
 });
