@@ -1,4 +1,6 @@
 import * as documentDb from 'aws-cdk-lib/aws-docdb';
+import { aws_docdb as interfaces_docdb } from 'aws-cdk-lib/interfaces';
+import { aws_rds as rds } from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import { defineBackend } from '@aws-amplify/backend';
 
@@ -23,7 +25,7 @@ const LibreChatVpc = new ec2.Vpc(customResourceStack, 'LibreChatVpc', {
      }
   ]
 });
-// Create the Document DB cluster in the VPC
+// Create the DocumentDB cluster in the VPC
 new documentDb.DatabaseCluster(customResourceStack, 'LibreChatDatabase', {
   masterUser: {
     username: 'libreAdmin',
@@ -35,3 +37,18 @@ new documentDb.DatabaseCluster(customResourceStack, 'LibreChatDatabase', {
   },
   engineVersion: '5.0.0', // Serverless requires engine version 5.0.0 or higher
 });
+// Create the DocumentDB Database Instance
+declare const caCertificate: rds.CaCertificate; 
+declare const dBClusterRef: interfaces_docdb.IDBClusterRef;
+declare const instanceType: ec2.InstanceType;
+
+const databaseInstance = new documentDb.DatabaseInstance(customResourceStack, 'LibreChatInstance', {
+  cluster: dBClusterRef,
+  instanceType: instanceType,
+  dbInstanceName: 'libreChatDbInstance',
+  caCertificate: caCertificate,
+});
+
+// new databaseInstance(
+
+// )
