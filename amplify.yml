@@ -11,6 +11,9 @@ frontend:
     preBuild:
       commands:
         - npm ci
+        - export NODE_OPTIONS=--max-old-space-size=5632
+        - export GENERATE_SOURCEMAP=false
+        - export INLINE_RUNTIME_CHUNK=false
     build:
       commands:
         - npm run frontend
