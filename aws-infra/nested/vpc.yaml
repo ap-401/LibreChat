@@ -370,8 +370,7 @@ Outputs:
       Name: !Sub librechat-${Environment}-PublicSubnet1Id
 
   PublicSubnet2Id:
-    Condition: IsMultiAZ
-    Value: !Ref PublicSubnet2
+    Value: !If [IsMultiAZ, !Ref PublicSubnet2, !Ref PublicSubnet1]
     Export:
       Name: !Sub librechat-${Environment}-PublicSubnet2Id
 
@@ -381,8 +380,7 @@ Outputs:
       Name: !Sub librechat-${Environment}-PrivateSubnet1Id
 
   PrivateSubnet2Id:
-    Condition: IsMultiAZ
-    Value: !Ref PrivateSubnet2
+    Value: !If [IsMultiAZ, !Ref PrivateSubnet2, !Ref PrivateSubnet1]
     Export:
       Name: !Sub librechat-${Environment}-PrivateSubnet2Id
 
