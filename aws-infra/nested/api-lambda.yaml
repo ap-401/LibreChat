@@ -122,7 +122,7 @@ Resources:
       FunctionName: !Sub librechat-api-${Environment}
       Handler: run.sh
       CodeUri: ../
-      Runtime: nodejs20.x
+      Runtime: nodejs22.x
       Architectures:
         - x86_64
       MemorySize: !Ref LambdaMemorySize

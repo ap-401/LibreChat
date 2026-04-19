@@ -41,10 +41,9 @@ Resources:
     Type: AWS::DocDB::DBSubnetGroup
     Properties:
       DBSubnetGroupDescription: !Sub 'LibreChat DocumentDB subnet group (${Environment})'
-      SubnetIds: !If
-        - IsMultiAZ
-        - [!Ref PrivateSubnet1Id, !Ref PrivateSubnet2Id]
-        - [!Ref PrivateSubnet1Id]
+      SubnetIds:
+        - !Ref PrivateSubnet1Id
+        - !Ref PrivateSubnet2Id
       Tags:
         - Key: Environment
           Value: !Ref Environment
@@ -181,8 +180,7 @@ Resources:
       Description: RDS combined CA bundle for DocumentDB TLS connections
       ContentUri: ../layers/docdb-ca/
       CompatibleRuntimes:
-        - nodejs20.x
-        - nodejs18.x
+        - nodejs22.x
       RetentionPolicy: Retain
 
 Outputs:
