@@ -1,0 +1,205 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: LibreChat — Amazon DocumentDB cluster, subnet group, parameter group, and CA bundle layer
+
+Parameters:
+  Environment:
+    Type: String
+  MultiAZ:
+    Type: String
+    Default: 'true'
+  DocumentDBMode:
+    Type: String
+    Default: provisioned
+    AllowedValues: [provisioned, serverless]
+  DocumentDBInstanceClass:
+    Type: String
+    Default: db.t3.medium
+  VpcId:
+    Type: String
+  PrivateSubnet1Id:
+    Type: String
+  PrivateSubnet2Id:
+    Type: String
+  DocDBSecurityGroupId:
+    Type: String
+  SecretArn:
+    Type: String
+
+Conditions:
+  IsMultiAZ: !Equals [!Ref MultiAZ, 'true']
+  IsProvisioned: !Equals [!Ref DocumentDBMode, 'provisioned']
+  IsServerless: !Equals [!Ref DocumentDBMode, 'serverless']
+  IsProvisionedAndMultiAZ: !And
+    - !Condition IsProvisioned
+    - !Condition IsMultiAZ
+
+Resources:
+
+  # ── 3.1 Subnet group ──────────────────────────────────────────────────────
+  DocDBSubnetGroup:
+    Type: AWS::DocDB::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: !Sub 'LibreChat DocumentDB subnet group (${Environment})'
+      SubnetIds: !If
+        - IsMultiAZ
+        - [!Ref PrivateSubnet1Id, !Ref PrivateSubnet2Id]
+        - [!Ref PrivateSubnet1Id]
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ── 3.2 Cluster parameter group (TLS enforced) ────────────────────────────
+  DocDBClusterParameterGroup:
+    Type: AWS::DocDB::DBClusterParameterGroup
+    Properties:
+      Description: !Sub 'LibreChat DocumentDB parameter group (${Environment}) — TLS enabled'
+      Family: docdb5.0
+      Parameters:
+        tls: enabled
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ── KMS CMK for encryption at rest ────────────────────────────────────────
+  DocDBKMSKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: !Sub 'LibreChat DocumentDB encryption key (${Environment})'
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowRootAccount
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+          - Sid: AllowDocDB
+            Effect: Allow
+            Principal:
+              Service: docdb.amazonaws.com
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+            Resource: '*'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  DocDBKMSKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub 'alias/librechat-docdb-${Environment}'
+      TargetKeyId: !Ref DocDBKMSKey
+
+  # ── 3.3 DocumentDB cluster ────────────────────────────────────────────────
+  DocDBCluster:
+    Type: AWS::DocDB::DBCluster
+    Properties:
+      DBClusterIdentifier: !Sub 'librechat-${Environment}'
+      DBSubnetGroupName: !Ref DocDBSubnetGroup
+      DBClusterParameterGroupName: !Ref DocDBClusterParameterGroup
+      VpcSecurityGroupIds:
+        - !Ref DocDBSecurityGroupId
+      MasterUsername: !Sub
+        - '{{resolve:secretsmanager:${SecretArn}:SecretString:DOCDB_USERNAME}}'
+        - SecretArn: !Ref SecretArn
+      MasterUserPassword: !Sub
+        - '{{resolve:secretsmanager:${SecretArn}:SecretString:DOCDB_PASSWORD}}'
+        - SecretArn: !Ref SecretArn
+      StorageEncrypted: true
+      KmsKeyId: !Ref DocDBKMSKey
+      BackupRetentionPeriod: 7
+      DeletionProtection: false
+      ServerlessV2ScalingConfiguration: !If
+        - IsProvisioned
+        - !Ref AWS::NoValue
+        - MinCapacity: 0.5
+          MaxCapacity: 16
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ── 3.4 DB instances ──────────────────────────────────────────────────────
+
+  # Writer instance — always present (provisioned mode)
+  DocDBWriterInstance:
+    Type: AWS::DocDB::DBInstance
+    Condition: IsProvisioned
+    Properties:
+      DBClusterIdentifier: !Ref DocDBCluster
+      DBInstanceClass: !Ref DocumentDBInstanceClass
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Role
+          Value: writer
+
+  # Reader instance — provisioned + multi-AZ only
+  DocDBReaderInstance:
+    Type: AWS::DocDB::DBInstance
+    Condition: IsProvisionedAndMultiAZ
+    Properties:
+      DBClusterIdentifier: !Ref DocDBCluster
+      DBInstanceClass: !Ref DocumentDBInstanceClass
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Role
+          Value: reader
+
+  # Serverless instance — single instance with db.serverless class
+  DocDBServerlessInstance:
+    Type: AWS::DocDB::DBInstance
+    Condition: IsServerless
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - E3620  # db.serverless is valid but not yet in cfn-lint's enum
+    Properties:
+      DBClusterIdentifier: !Ref DocDBCluster
+      DBInstanceClass: db.serverless
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Role
+          Value: serverless
+
+  # ── 3.5 DocumentDB CA bundle Lambda layer ─────────────────────────────────
+  DocDBCALayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: !Sub 'librechat-docdb-ca-${Environment}'
+      Description: RDS combined CA bundle for DocumentDB TLS connections
+      ContentUri: ../layers/docdb-ca/
+      CompatibleRuntimes:
+        - nodejs20.x
+        - nodejs18.x
+      RetentionPolicy: Retain
+
+Outputs:
+  DocumentDBEndpoint:
+    Description: DocumentDB cluster endpoint
+    Value: !GetAtt DocDBCluster.Endpoint
+    Export:
+      Name: !Sub '${AWS::StackName}-DocumentDBEndpoint'
+
+  DocumentDBPort:
+    Description: DocumentDB port
+    Value: '27017'
+    Export:
+      Name: !Sub '${AWS::StackName}-DocumentDBPort'
+
+  DocDBCALayerArn:
+    Description: ARN of the DocumentDB CA bundle Lambda layer
+    Value: !Ref DocDBCALayer
+    Export:
+      Name: !Sub '${AWS::StackName}-DocDBCALayerArn'

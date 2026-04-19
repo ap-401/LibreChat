@@ -1,0 +1,219 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: LibreChat — MeiliSearch on ECS Fargate with EFS persistence (optional, gated on EnableMeiliSearch)
+
+Parameters:
+  Environment:
+    Type: String
+  EnableMeiliSearch:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+  VpcId:
+    Type: String
+  PrivateSubnet1Id:
+    Type: String
+  PrivateSubnet2Id:
+    Type: String
+  MeiliSecurityGroupId:
+    Type: String
+  SecretArn:
+    Type: String
+
+Conditions:
+  IsMeiliEnabled: !Equals [!Ref EnableMeiliSearch, 'true']
+
+Resources:
+
+  # ── EFS File System ──────────────────────────────────────────────────────
+
+  MeiliFileSystem:
+    Type: AWS::EFS::FileSystem
+    Condition: IsMeiliEnabled
+    Properties:
+      Encrypted: true
+      PerformanceMode: generalPurpose
+      ThroughputMode: bursting
+      FileSystemTags:
+        - Key: Name
+          Value: !Sub librechat-meili-efs-${Environment}
+
+  MeiliMountTarget1:
+    Type: AWS::EFS::MountTarget
+    Condition: IsMeiliEnabled
+    Properties:
+      FileSystemId: !Ref MeiliFileSystem
+      SubnetId: !Ref PrivateSubnet1Id
+      SecurityGroups:
+        - !Ref MeiliSecurityGroupId
+
+  MeiliMountTarget2:
+    Type: AWS::EFS::MountTarget
+    Condition: IsMeiliEnabled
+    Properties:
+      FileSystemId: !Ref MeiliFileSystem
+      SubnetId: !Ref PrivateSubnet2Id
+      SecurityGroups:
+        - !Ref MeiliSecurityGroupId
+
+  # ── CloudWatch Log Group ─────────────────────────────────────────────────
+
+  MeiliLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: IsMeiliEnabled
+    Properties:
+      LogGroupName: !Sub /ecs/librechat-meili-${Environment}
+      RetentionInDays: 14
+
+  # ── ECS Cluster ──────────────────────────────────────────────────────────
+
+  MeiliCluster:
+    Type: AWS::ECS::Cluster
+    Condition: IsMeiliEnabled
+    Properties:
+      ClusterName: !Sub librechat-meili-${Environment}
+      Tags:
+        - Key: Name
+          Value: !Sub librechat-meili-cluster-${Environment}
+
+  # ── ECS Task Execution Role ──────────────────────────────────────────────
+
+  MeiliTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Condition: IsMeiliEnabled
+    Properties:
+      RoleName: !Sub librechat-meili-exec-${Environment}
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: MeiliSecretsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref SecretArn
+
+  # ── ECS Task Role ────────────────────────────────────────────────────────
+
+  MeiliTaskRole:
+    Type: AWS::IAM::Role
+    Condition: IsMeiliEnabled
+    Properties:
+      RoleName: !Sub librechat-meili-task-${Environment}
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+
+  # ── ECS Task Definition ──────────────────────────────────────────────────
+
+  MeiliTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Condition: IsMeiliEnabled
+    DependsOn:
+      - MeiliMountTarget1
+      - MeiliMountTarget2
+    Properties:
+      Family: !Sub librechat-meili-${Environment}
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: '512'
+      Memory: '1024'
+      ExecutionRoleArn: !GetAtt MeiliTaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt MeiliTaskRole.Arn
+      Volumes:
+        - Name: meili-data
+          EFSVolumeConfiguration:
+            FilesystemId: !Ref MeiliFileSystem
+            TransitEncryption: ENABLED
+      ContainerDefinitions:
+        - Name: meilisearch
+          Image: getmeili/meilisearch:latest
+          Essential: true
+          PortMappings:
+            - ContainerPort: 7700
+              Protocol: tcp
+          MountPoints:
+            - SourceVolume: meili-data
+              ContainerPath: /meili_data
+          Secrets:
+            - Name: MEILI_MASTER_KEY
+              ValueFrom: !Sub '${SecretArn}:MEILI_MASTER_KEY::'
+          Environment:
+            - Name: MEILI_ENV
+              Value: production
+            - Name: MEILI_DB_PATH
+              Value: /meili_data
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref MeiliLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: meili
+
+  # ── AWS Cloud Map Namespace ──────────────────────────────────────────────
+
+  MeiliNamespace:
+    Type: AWS::ServiceDiscovery::PrivateDnsNamespace
+    Condition: IsMeiliEnabled
+    Properties:
+      Name: librechat.local
+      Vpc: !Ref VpcId
+      Description: !Sub LibreChat internal service discovery (${Environment})
+
+  MeiliDiscoveryService:
+    Type: AWS::ServiceDiscovery::Service
+    Condition: IsMeiliEnabled
+    Properties:
+      Name: meili
+      NamespaceId: !Ref MeiliNamespace
+      DnsConfig:
+        DnsRecords:
+          - Type: A
+            TTL: 10
+        RoutingPolicy: MULTIVALUE
+      HealthCheckCustomConfig:
+        FailureThreshold: 1
+
+  # ── ECS Service ──────────────────────────────────────────────────────────
+
+  MeiliService:
+    Type: AWS::ECS::Service
+    Condition: IsMeiliEnabled
+    Properties:
+      ServiceName: !Sub librechat-meili-${Environment}
+      Cluster: !Ref MeiliCluster
+      TaskDefinition: !Ref MeiliTaskDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          Subnets:
+            - !Ref PrivateSubnet1Id
+            - !Ref PrivateSubnet2Id
+          SecurityGroups:
+            - !Ref MeiliSecurityGroupId
+      ServiceRegistries:
+        - RegistryArn: !GetAtt MeiliDiscoveryService.Arn
+      Tags:
+        - Key: Name
+          Value: !Sub librechat-meili-svc-${Environment}
+
+Outputs:
+  MeiliSearchEndpoint:
+    Condition: IsMeiliEnabled
+    Description: MeiliSearch internal DNS endpoint
+    Value: 'http://meili.librechat.local:7700'

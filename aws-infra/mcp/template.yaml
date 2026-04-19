@@ -1,0 +1,113 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: LibreChat — MCP Lambda functions deployed inside the VPC
+
+Parameters:
+  Environment:
+    Type: String
+    AllowedValues: [dev, staging, prod]
+    Description: Deployment environment
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID for MCP Lambda functions
+
+  PrivateSubnet1Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: Private subnet 1 for MCP Lambda functions
+
+  PrivateSubnet2Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: Private subnet 2 for MCP Lambda functions
+
+  MCPSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Security group for MCP Lambda functions (sg-mcp)
+
+  SecretArn:
+    Type: String
+    Description: ARN of the Secrets Manager secret containing application secrets
+
+Globals:
+  Function:
+    Runtime: nodejs20.x
+    Timeout: 60
+    MemorySize: 256
+    Architectures:
+      - x86_64
+    VpcConfig:
+      SubnetIds:
+        - !Ref PrivateSubnet1Id
+        - !Ref PrivateSubnet2Id
+      SecurityGroupIds:
+        - !Ref MCPSecurityGroupId
+    Environment:
+      Variables:
+        ENVIRONMENT: !Ref Environment
+        SECRET_ARN: !Ref SecretArn
+    Tags:
+      Environment: !Ref Environment
+      Component: mcp
+
+Resources:
+
+  # ── Shared IAM policy for all MCP Lambda functions ─────────────────────────
+  MCPLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub librechat-${Environment}-mcp-lambda-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        # Secrets Manager — scoped to the application secret
+        - PolicyName: SecretsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref SecretArn
+
+        # ElastiCache — scoped connect permission
+        - PolicyName: ElastiCacheAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - elasticache:Connect
+                Resource: !Sub arn:aws:elasticache:${AWS::Region}:${AWS::AccountId}:replicationgroup:librechat-${Environment}-*
+
+  # ── Placeholder MCP function — HelloWorldMCP ───────────────────────────────
+  HelloWorldMCPFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub librechat-${Environment}-mcp-hello-world
+      Description: Placeholder MCP server demonstrating the Lambda MCP pattern
+      Handler: index.handler
+      CodeUri: handlers/hello-world/
+      Role: !GetAtt MCPLambdaRole.Arn
+      FunctionUrlConfig:
+        AuthType: AWS_IAM
+
+Outputs:
+  HelloWorldMCPFunctionUrl:
+    Description: Function URL of the HelloWorldMCP Lambda function
+    Value: !GetAtt HelloWorldMCPFunctionUrl.FunctionUrl
+    Export:
+      Name: !Sub librechat-${Environment}-HelloWorldMCPFunctionUrl
+
+  MCPLambdaRoleArn:
+    Description: ARN of the shared MCP Lambda IAM role
+    Value: !GetAtt MCPLambdaRole.Arn
+    Export:
+      Name: !Sub librechat-${Environment}-MCPLambdaRoleArn

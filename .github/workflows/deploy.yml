@@ -1,38 +1,80 @@
-name: Deploy_GHRunner_Linux_ACI
+# deploy.yml — AWS SAM deployment pipeline for LibreChat
+#
+# Triggers:
+#   - Push to main branch (deploys to dev)
+#   - Manual workflow_dispatch with environment selection (dev/staging/prod)
+#
+# Authentication: OIDC (no long-lived credentials)
+# Requirements: 12.3
+
+name: Deploy LibreChat to AWS
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
+    inputs:
+      environment:
+        description: Target deployment environment
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+        default: dev
 
-env:
-  RUNNER_VERSION: 2.293.0
-  ACI_RESOURCE_GROUP: 'Demo-ACI-GitHub-Runners-RG'
-  ACI_NAME: 'gh-runner-linux-01'
-  DNS_NAME_LABEL: 'gh-lin-01'
-  GH_OWNER: ${{ github.repository_owner }}
-  GH_REPOSITORY: 'LibreChat' #Change here to deploy self hosted runner ACI to another repo.
+permissions:
+  id-token: write   # Required for OIDC AWS authentication
+  contents: read
 
 jobs:
-  deploy-gh-runner-aci:
+  deploy:
+    name: Build & Deploy (${{ inputs.environment || 'dev' }})
     runs-on: ubuntu-latest
+    environment: ${{ inputs.environment || 'dev' }}
+
     steps:
-      # checkout the repo
-      - name: 'Checkout GitHub Action'
+      # ── Checkout ────────────────────────────────────────────────────────
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: 'Login via Azure CLI'
-        uses: azure/login@v1
+      # ── AWS Credentials (OIDC) ─────────────────────────────────────────
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
 
-      - name: 'Deploy to Azure Container Instances'
-        uses: 'azure/aci-deploy@v1'
-        with:
-          resource-group: ${{ env.ACI_RESOURCE_GROUP }}
-          image: ${{ secrets.REGISTRY_LOGIN_SERVER }}/pwd9000-github-runner-lin:${{ env.RUNNER_VERSION }}
-          registry-login-server: ${{ secrets.REGISTRY_LOGIN_SERVER }}
-          registry-username: ${{ secrets.REGISTRY_USERNAME }}
-          registry-password: ${{ secrets.REGISTRY_PASSWORD }}
-          name: ${{ env.ACI_NAME }}
-          dns-name-label: ${{ env.DNS_NAME_LABEL }}
-          environment-variables: GH_TOKEN=${{ secrets.PAT_TOKEN }} GH_OWNER=${{ env.GH_OWNER }} GH_REPOSITORY=${{ env.GH_REPOSITORY }}
-          location: 'eastus'
+      # ── Install dependencies ───────────────────────────────────────────
+      - name: Install dependencies
+        run: npm ci
+
+      # ── Run API tests ──────────────────────────────────────────────────
+      - name: Run API unit tests
+        run: npm test --workspace=api
+
+      # ── Build frontend ─────────────────────────────────────────────────
+      - name: Build frontend
+        run: npm run frontend
+
+      # ── SAM Build ──────────────────────────────────────────────────────
+      - name: SAM build
+        run: sam build --config-env ${{ inputs.environment || 'dev' }}
+        working-directory: aws-infra
+
+      # ── SAM Deploy ─────────────────────────────────────────────────────
+      - name: SAM deploy
+        run: sam deploy --config-env ${{ inputs.environment || 'dev' }} --no-confirm-changeset
+        working-directory: aws-infra
+
+      # ── Sync frontend assets to S3 ─────────────────────────────────────
+      - name: Sync frontend assets to S3
+        run: bash aws-infra/scripts/build-frontend.sh ${{ inputs.environment || 'dev' }}
+
+      # ── Invalidate CloudFront cache ────────────────────────────────────
+      - name: Invalidate CloudFront cache
+        run: bash aws-infra/scripts/invalidate-cf.sh ${{ inputs.environment || 'dev' }}
+
+      # ── Smoke tests ────────────────────────────────────────────────────
+      - name: Run smoke tests
+        run: bash aws-infra/scripts/smoke-test.sh ${{ inputs.environment || 'dev' }}

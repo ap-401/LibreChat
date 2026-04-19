@@ -1,0 +1,412 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: LibreChat — VPC, subnets, NAT gateways, and security groups
+
+Parameters:
+  Environment:
+    Type: String
+  MultiAZ:
+    Type: String
+    Default: 'true'
+
+Conditions:
+  IsMultiAZ: !Equals [!Ref MultiAZ, 'true']
+
+Resources:
+
+  # ── VPC ──────────────────────────────────────────────────────────────────────
+
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub librechat-${Environment}
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub librechat-igw-${Environment}
+
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # ── Public Subnets ────────────────────────────────────────────────────────────
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.0.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub librechat-public-1-${Environment}
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Condition: IsMultiAZ
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub librechat-public-2-${Environment}
+
+  # ── Private Subnets ───────────────────────────────────────────────────────────
+
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Sub librechat-private-1-${Environment}
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Condition: IsMultiAZ
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.3.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Sub librechat-private-2-${Environment}
+
+  # ── Public Route Table ────────────────────────────────────────────────────────
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub librechat-public-rt-${Environment}
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: IsMultiAZ
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+  # ── NAT Gateways ──────────────────────────────────────────────────────────────
+
+  EIP1:
+    Type: AWS::EC2::EIP
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      Domain: vpc
+
+  NatGateway1:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt EIP1.AllocationId
+      SubnetId: !Ref PublicSubnet1
+      Tags:
+        - Key: Name
+          Value: !Sub librechat-nat-1-${Environment}
+
+  EIP2:
+    Type: AWS::EC2::EIP
+    Condition: IsMultiAZ
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      Domain: vpc
+
+  NatGateway2:
+    Type: AWS::EC2::NatGateway
+    Condition: IsMultiAZ
+    Properties:
+      AllocationId: !GetAtt EIP2.AllocationId
+      SubnetId: !Ref PublicSubnet2
+      Tags:
+        - Key: Name
+          Value: !Sub librechat-nat-2-${Environment}
+
+  # ── Private Route Tables ──────────────────────────────────────────────────────
+
+  PrivateRouteTable1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub librechat-private-rt-1-${Environment}
+
+  PrivateRoute1:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable1
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway1
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable1
+
+  PrivateRouteTable2:
+    Type: AWS::EC2::RouteTable
+    Condition: IsMultiAZ
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub librechat-private-rt-2-${Environment}
+
+  PrivateRoute2:
+    Type: AWS::EC2::Route
+    Condition: IsMultiAZ
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable2
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway2
+
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: IsMultiAZ
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable2
+
+  # ── Security Groups ───────────────────────────────────────────────────────────
+
+  # sg-lambda: no inbound; egress to internet (443), docdb (27017), redis (6379),
+  #            meili (7700), and mcp (443)
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Lambda function security group
+      VpcId: !Ref VPC
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS to external AI provider APIs
+      Tags:
+        - Key: Name
+          Value: !Sub librechat-sg-lambda-${Environment}
+
+  # sg-docdb: ingress 27017 from sg-lambda only; no outbound
+  DocDBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: DocumentDB security group
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 27017
+          ToPort: 27017
+          SourceSecurityGroupId: !Ref LambdaSecurityGroup
+          Description: MongoDB from Lambda
+      SecurityGroupEgress: []
+      Tags:
+        - Key: Name
+          Value: !Sub librechat-sg-docdb-${Environment}
+
+  # sg-redis: ingress 6379 from sg-lambda only; no outbound
+  RedisSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ElastiCache Redis security group
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 6379
+          ToPort: 6379
+          SourceSecurityGroupId: !Ref LambdaSecurityGroup
+          Description: Redis from Lambda
+      SecurityGroupEgress: []
+      Tags:
+        - Key: Name
+          Value: !Sub librechat-sg-redis-${Environment}
+
+  # sg-meili: ingress 7700 from sg-lambda only; no outbound
+  MeiliSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: MeiliSearch security group
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 7700
+          ToPort: 7700
+          SourceSecurityGroupId: !Ref LambdaSecurityGroup
+          Description: MeiliSearch from Lambda
+      SecurityGroupEgress: []
+      Tags:
+        - Key: Name
+          Value: !Sub librechat-sg-meili-${Environment}
+
+  # sg-mcp: ingress 443 from sg-lambda; egress 443 to internet, 27017 to docdb, 6379 to redis
+  MCPSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: MCP Lambda security group
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref LambdaSecurityGroup
+          Description: HTTPS from API Lambda
+      Tags:
+        - Key: Name
+          Value: !Sub librechat-sg-mcp-${Environment}
+
+  # Lambda egress rules referencing other SGs (added separately to avoid circular refs)
+  LambdaEgressDocDB:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref LambdaSecurityGroup
+      IpProtocol: tcp
+      FromPort: 27017
+      ToPort: 27017
+      DestinationSecurityGroupId: !Ref DocDBSecurityGroup
+      Description: MongoDB to DocumentDB
+
+  LambdaEgressRedis:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref LambdaSecurityGroup
+      IpProtocol: tcp
+      FromPort: 6379
+      ToPort: 6379
+      DestinationSecurityGroupId: !Ref RedisSecurityGroup
+      Description: Redis to ElastiCache
+
+  LambdaEgressMeili:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref LambdaSecurityGroup
+      IpProtocol: tcp
+      FromPort: 7700
+      ToPort: 7700
+      DestinationSecurityGroupId: !Ref MeiliSecurityGroup
+      Description: MeiliSearch to ECS Fargate
+
+  LambdaEgressMCP:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref LambdaSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      DestinationSecurityGroupId: !Ref MCPSecurityGroup
+      Description: HTTPS to MCP Lambda
+
+  MCPEgressInternet:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref MCPSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      CidrIp: 0.0.0.0/0
+      Description: HTTPS to internet
+
+  MCPEgressDocDB:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref MCPSecurityGroup
+      IpProtocol: tcp
+      FromPort: 27017
+      ToPort: 27017
+      DestinationSecurityGroupId: !Ref DocDBSecurityGroup
+      Description: MongoDB to DocumentDB
+
+  MCPEgressRedis:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref MCPSecurityGroup
+      IpProtocol: tcp
+      FromPort: 6379
+      ToPort: 6379
+      DestinationSecurityGroupId: !Ref RedisSecurityGroup
+      Description: Redis to ElastiCache
+
+# ── Outputs ───────────────────────────────────────────────────────────────────
+
+Outputs:
+
+  VpcId:
+    Value: !Ref VPC
+    Export:
+      Name: !Sub librechat-${Environment}-VpcId
+
+  PublicSubnet1Id:
+    Value: !Ref PublicSubnet1
+    Export:
+      Name: !Sub librechat-${Environment}-PublicSubnet1Id
+
+  PublicSubnet2Id:
+    Condition: IsMultiAZ
+    Value: !Ref PublicSubnet2
+    Export:
+      Name: !Sub librechat-${Environment}-PublicSubnet2Id
+
+  PrivateSubnet1Id:
+    Value: !Ref PrivateSubnet1
+    Export:
+      Name: !Sub librechat-${Environment}-PrivateSubnet1Id
+
+  PrivateSubnet2Id:
+    Condition: IsMultiAZ
+    Value: !Ref PrivateSubnet2
+    Export:
+      Name: !Sub librechat-${Environment}-PrivateSubnet2Id
+
+  LambdaSecurityGroupId:
+    Value: !Ref LambdaSecurityGroup
+    Export:
+      Name: !Sub librechat-${Environment}-LambdaSecurityGroupId
+
+  DocDBSecurityGroupId:
+    Value: !Ref DocDBSecurityGroup
+    Export:
+      Name: !Sub librechat-${Environment}-DocDBSecurityGroupId
+
+  RedisSecurityGroupId:
+    Value: !Ref RedisSecurityGroup
+    Export:
+      Name: !Sub librechat-${Environment}-RedisSecurityGroupId
+
+  MeiliSecurityGroupId:
+    Value: !Ref MeiliSecurityGroup
+    Export:
+      Name: !Sub librechat-${Environment}-MeiliSecurityGroupId
+
+  MCPSecurityGroupId:
+    Value: !Ref MCPSecurityGroup
+    Export:
+      Name: !Sub librechat-${Environment}-MCPSecurityGroupId

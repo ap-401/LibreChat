@@ -1,0 +1,381 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: LibreChat — CloudWatch log groups, dashboard, alarms, SNS topic, and X-Ray tracing
+
+Parameters:
+  Environment:
+    Type: String
+  LambdaFunctionName:
+    Type: String
+    Description: Lambda function name from the api-lambda stack
+  APIGatewayId:
+    Type: String
+    Description: API Gateway HTTP API ID from the api-lambda stack
+
+Resources:
+
+  # ── CloudWatch Log Groups (Task 13.1) ─────────────────────────────────────
+  # Note: The API Gateway log group (/aws/apigateway/librechat-{env}) is
+  # already created in api-lambda.yaml (ApiAccessLogGroup). Only the Lambda
+  # log group is created here.
+
+  LambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${LambdaFunctionName}
+      RetentionInDays: 30
+
+  # ── SNS Topic for Alerts (Task 13.3) ──────────────────────────────────────
+
+  AlertsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub librechat-alerts-${Environment}
+
+  # ── CloudWatch Alarms (Task 13.3) ─────────────────────────────────────────
+
+  LambdaErrorRateAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub librechat-${Environment}-LambdaErrorRate
+      AlarmDescription: Lambda error rate exceeds 5% over 5 minutes
+      ComparisonOperator: GreaterThanThreshold
+      Threshold: 0.05
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+      Metrics:
+        - Id: errors
+          MetricStat:
+            Metric:
+              Namespace: AWS/Lambda
+              MetricName: Errors
+              Dimensions:
+                - Name: FunctionName
+                  Value: !Ref LambdaFunctionName
+            Period: 300
+            Stat: Sum
+          ReturnData: false
+        - Id: invocations
+          MetricStat:
+            Metric:
+              Namespace: AWS/Lambda
+              MetricName: Invocations
+              Dimensions:
+                - Name: FunctionName
+                  Value: !Ref LambdaFunctionName
+            Period: 300
+            Stat: Sum
+          ReturnData: false
+        - Id: error_rate
+          Expression: 'IF(invocations > 0, errors / invocations, 0)'
+          Label: ErrorRate
+          ReturnData: true
+
+  LambdaThrottlesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub librechat-${Environment}-LambdaThrottles
+      AlarmDescription: Lambda throttles exceed 10 over 1 minute
+      Namespace: AWS/Lambda
+      MetricName: Throttles
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref LambdaFunctionName
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 10
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+
+  LambdaDurationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub librechat-${Environment}-LambdaDuration
+      AlarmDescription: Lambda p99 duration exceeds 25 seconds over 5 minutes
+      Namespace: AWS/Lambda
+      MetricName: Duration
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref LambdaFunctionName
+      ExtendedStatistic: p99
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 25000
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+
+  DocDBConnectionsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub librechat-${Environment}-DocDBConnections
+      AlarmDescription: >-
+        DocumentDB connections exceed 80% of max. Default db.t3.medium max is
+        ~500 connections; threshold set at 400.
+      Namespace: AWS/DocDB
+      MetricName: DatabaseConnections
+      Dimensions:
+        - Name: DBClusterIdentifier
+          Value: !Sub librechat-docdb-${Environment}
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 400
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+
+  # ── CloudWatch Dashboard (Task 13.2) ──────────────────────────────────────
+
+  LibreChatDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub librechat-${Environment}
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "text",
+              "x": 0, "y": 0, "width": 24, "height": 1,
+              "properties": { "markdown": "## Lambda — ${LambdaFunctionName}" }
+            },
+            {
+              "type": "metric",
+              "x": 0, "y": 1, "width": 8, "height": 6,
+              "properties": {
+                "title": "Invocations & Errors",
+                "region": "${AWS::Region}",
+                "metrics": [
+                  ["AWS/Lambda", "Invocations", "FunctionName", "${LambdaFunctionName}", {"stat": "Sum"}],
+                  ["AWS/Lambda", "Errors", "FunctionName", "${LambdaFunctionName}", {"stat": "Sum", "color": "#d62728"}]
+                ],
+                "period": 300,
+                "view": "timeSeries",
+                "stacked": false
+              }
+            },
+            {
+              "type": "metric",
+              "x": 8, "y": 1, "width": 8, "height": 6,
+              "properties": {
+                "title": "Duration (p50 / p95 / p99)",
+                "region": "${AWS::Region}",
+                "metrics": [
+                  ["AWS/Lambda", "Duration", "FunctionName", "${LambdaFunctionName}", {"stat": "p50", "label": "p50"}],
+                  ["AWS/Lambda", "Duration", "FunctionName", "${LambdaFunctionName}", {"stat": "p95", "label": "p95"}],
+                  ["AWS/Lambda", "Duration", "FunctionName", "${LambdaFunctionName}", {"stat": "p99", "label": "p99", "color": "#d62728"}]
+                ],
+                "period": 300,
+                "view": "timeSeries",
+                "stacked": false
+              }
+            },
+            {
+              "type": "metric",
+              "x": 16, "y": 1, "width": 8, "height": 6,
+              "properties": {
+                "title": "Throttles & ConcurrentExecutions",
+                "region": "${AWS::Region}",
+                "metrics": [
+                  ["AWS/Lambda", "Throttles", "FunctionName", "${LambdaFunctionName}", {"stat": "Sum"}],
+                  ["AWS/Lambda", "ConcurrentExecutions", "FunctionName", "${LambdaFunctionName}", {"stat": "Maximum", "color": "#2ca02c"}]
+                ],
+                "period": 300,
+                "view": "timeSeries",
+                "stacked": false
+              }
+            },
+            {
+              "type": "text",
+              "x": 0, "y": 7, "width": 24, "height": 1,
+              "properties": { "markdown": "## API Gateway — ${APIGatewayId}" }
+            },
+            {
+              "type": "metric",
+              "x": 0, "y": 8, "width": 8, "height": 6,
+              "properties": {
+                "title": "4xx / 5xx Errors",
+                "region": "${AWS::Region}",
+                "metrics": [
+                  ["AWS/ApiGateway", "4xx", "ApiId", "${APIGatewayId}", {"stat": "Sum"}],
+                  ["AWS/ApiGateway", "5xx", "ApiId", "${APIGatewayId}", {"stat": "Sum", "color": "#d62728"}]
+                ],
+                "period": 300,
+                "view": "timeSeries",
+                "stacked": false
+              }
+            },
+            {
+              "type": "metric",
+              "x": 8, "y": 8, "width": 8, "height": 6,
+              "properties": {
+                "title": "Latency (p50 / p99)",
+                "region": "${AWS::Region}",
+                "metrics": [
+                  ["AWS/ApiGateway", "Latency", "ApiId", "${APIGatewayId}", {"stat": "p50", "label": "p50"}],
+                  ["AWS/ApiGateway", "Latency", "ApiId", "${APIGatewayId}", {"stat": "p99", "label": "p99", "color": "#d62728"}]
+                ],
+                "period": 300,
+                "view": "timeSeries",
+                "stacked": false
+              }
+            },
+            {
+              "type": "metric",
+              "x": 16, "y": 8, "width": 8, "height": 6,
+              "properties": {
+                "title": "IntegrationLatency",
+                "region": "${AWS::Region}",
+                "metrics": [
+                  ["AWS/ApiGateway", "IntegrationLatency", "ApiId", "${APIGatewayId}", {"stat": "p50", "label": "p50"}],
+                  ["AWS/ApiGateway", "IntegrationLatency", "ApiId", "${APIGatewayId}", {"stat": "p99", "label": "p99", "color": "#d62728"}]
+                ],
+                "period": 300,
+                "view": "timeSeries",
+                "stacked": false
+              }
+            },
+            {
+              "type": "text",
+              "x": 0, "y": 14, "width": 24, "height": 1,
+              "properties": { "markdown": "## DocumentDB — librechat-docdb-${Environment}" }
+            },
+            {
+              "type": "metric",
+              "x": 0, "y": 15, "width": 8, "height": 6,
+              "properties": {
+                "title": "DatabaseConnections",
+                "region": "${AWS::Region}",
+                "metrics": [
+                  ["AWS/DocDB", "DatabaseConnections", "DBClusterIdentifier", "librechat-docdb-${Environment}", {"stat": "Maximum"}]
+                ],
+                "period": 300,
+                "view": "timeSeries",
+                "stacked": false
+              }
+            },
+            {
+              "type": "metric",
+              "x": 8, "y": 15, "width": 8, "height": 6,
+              "properties": {
+                "title": "ReadLatency",
+                "region": "${AWS::Region}",
+                "metrics": [
+                  ["AWS/DocDB", "ReadLatency", "DBClusterIdentifier", "librechat-docdb-${Environment}", {"stat": "Average"}]
+                ],
+                "period": 300,
+                "view": "timeSeries",
+                "stacked": false
+              }
+            },
+            {
+              "type": "metric",
+              "x": 16, "y": 15, "width": 8, "height": 6,
+              "properties": {
+                "title": "WriteLatency",
+                "region": "${AWS::Region}",
+                "metrics": [
+                  ["AWS/DocDB", "WriteLatency", "DBClusterIdentifier", "librechat-docdb-${Environment}", {"stat": "Average"}]
+                ],
+                "period": 300,
+                "view": "timeSeries",
+                "stacked": false
+              }
+            },
+            {
+              "type": "text",
+              "x": 0, "y": 21, "width": 24, "height": 1,
+              "properties": { "markdown": "## ElastiCache — librechat-redis-${Environment}" }
+            },
+            {
+              "type": "metric",
+              "x": 0, "y": 22, "width": 6, "height": 6,
+              "properties": {
+                "title": "CacheHits / CacheMisses",
+                "region": "${AWS::Region}",
+                "metrics": [
+                  ["AWS/ElastiCache", "CacheHits", "ReplicationGroupId", "librechat-redis-${Environment}", {"stat": "Sum"}],
+                  ["AWS/ElastiCache", "CacheMisses", "ReplicationGroupId", "librechat-redis-${Environment}", {"stat": "Sum", "color": "#d62728"}]
+                ],
+                "period": 300,
+                "view": "timeSeries",
+                "stacked": false
+              }
+            },
+            {
+              "type": "metric",
+              "x": 6, "y": 22, "width": 6, "height": 6,
+              "properties": {
+                "title": "CurrConnections",
+                "region": "${AWS::Region}",
+                "metrics": [
+                  ["AWS/ElastiCache", "CurrConnections", "ReplicationGroupId", "librechat-redis-${Environment}", {"stat": "Maximum"}]
+                ],
+                "period": 300,
+                "view": "timeSeries",
+                "stacked": false
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12, "y": 22, "width": 6, "height": 6,
+              "properties": {
+                "title": "EngineCPUUtilization",
+                "region": "${AWS::Region}",
+                "metrics": [
+                  ["AWS/ElastiCache", "EngineCPUUtilization", "ReplicationGroupId", "librechat-redis-${Environment}", {"stat": "Average"}]
+                ],
+                "period": 300,
+                "view": "timeSeries",
+                "stacked": false,
+                "yAxis": { "left": { "min": 0, "max": 100 } }
+              }
+            }
+          ]
+        }
+
+  # ── X-Ray Sampling Rule (Task 13.4) ──────────────────────────────────────
+  # Note: X-Ray active tracing is already enabled on the Lambda function
+  # (Tracing: Active in api-lambda.yaml) and the API Gateway stage
+  # (DetailedMetricsEnabled: true in api-lambda.yaml). This sampling rule
+  # provides fine-grained control over trace sampling for the LibreChat
+  # service.
+
+  XRaySamplingRule:
+    Type: AWS::XRay::SamplingRule
+    Properties:
+      SamplingRule:
+        RuleName: !Sub librechat-${Environment}
+        Priority: 100
+        FixedRate: 0.05
+        ReservoirSize: 5
+        ServiceName: !Sub librechat-api-${Environment}
+        ServiceType: '*'
+        Host: '*'
+        HTTPMethod: '*'
+        URLPath: '*'
+        ResourceARN: '*'
+        Version: 1
+
+Outputs:
+  SNSTopicArn:
+    Description: ARN of the alerts SNS topic
+    Value: !Ref AlertsTopic
+    Export:
+      Name: !Sub ${AWS::StackName}-SNSTopicArn
+
+  DashboardName:
+    Description: Name of the CloudWatch dashboard
+    Value: !Sub librechat-${Environment}
+    Export:
+      Name: !Sub ${AWS::StackName}-DashboardName

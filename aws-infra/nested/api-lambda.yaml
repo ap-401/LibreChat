@@ -1,0 +1,244 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: LibreChat — Lambda API function, API Gateway HTTP API, and IAM role
+
+Parameters:
+  Environment:
+    Type: String
+  LambdaMemorySize:
+    Type: Number
+    Default: 1024
+  VpcId:
+    Type: String
+  PrivateSubnet1Id:
+    Type: String
+  PrivateSubnet2Id:
+    Type: String
+  LambdaSecurityGroupId:
+    Type: String
+  SecretArn:
+    Type: String
+  UploadsBucketName:
+    Type: String
+  UploadsBucketArn:
+    Type: String
+  SESIdentityArn:
+    Type: String
+  DocDBCALayerArn:
+    Type: String
+
+Resources:
+
+  # ── IAM Role ──────────────────────────────────────────────────────────────
+
+  LibreChatLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub librechat-lambda-role-${Environment}
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: SecretsManagerAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref SecretArn
+
+        - PolicyName: SSMParameterAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParametersByPath
+                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/librechat/${Environment}/config/*
+
+        - PolicyName: S3UploadsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:DeleteObject
+                Resource:
+                  - !Sub ${UploadsBucketArn}/*
+
+        - PolicyName: SESAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ses:SendEmail
+                  - ses:SendRawEmail
+                Resource: !Ref SESIdentityArn
+
+        - PolicyName: XRayAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - xray:PutTraceSegments
+                  - xray:PutTelemetryRecords
+                Resource: '*'
+
+        - PolicyName: VPCENIAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:CreateNetworkInterface
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DeleteNetworkInterface
+                Resource: '*'
+
+        - PolicyName: CloudWatchLogsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/librechat-api-${Environment}:*
+
+  # ── Lambda Function ────────────────────────────────────────────────────────
+
+  LibreChatApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub librechat-api-${Environment}
+      Handler: run.sh
+      CodeUri: ../
+      Runtime: nodejs20.x
+      Architectures:
+        - x86_64
+      MemorySize: !Ref LambdaMemorySize
+      Timeout: 30
+      Role: !GetAtt LibreChatLambdaRole.Arn
+      Tracing: Active
+      Layers:
+        - arn:aws:lambda:us-east-1:753240598075:layer:LambdaAdapterLayerX86:24
+        - !Ref DocDBCALayerArn
+      VpcConfig:
+        SubnetIds:
+          - !Ref PrivateSubnet1Id
+          - !Ref PrivateSubnet2Id
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroupId
+      Environment:
+        Variables:
+          AWS_LAMBDA_EXEC_WRAPPER: /opt/bootstrap
+          PORT: '3080'
+          READINESS_CHECK_PATH: /health
+          SECRET_ARN: !Ref SecretArn
+          CONSOLE_JSON: 'true'
+          TRUST_PROXY: '1'
+          NODE_OPTIONS: --require /opt/nodejs/init-secrets.js
+
+  # Explicit Lambda Function URL for response streaming (task 7.5)
+  LibreChatApiFunctionUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      AuthType: NONE
+      InvokeMode: RESPONSE_STREAM
+      TargetFunctionArn: !GetAtt LibreChatApiFunction.Arn
+
+  # Allow public invocation via the function URL
+  FunctionUrlAllowPublicAccess:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt LibreChatApiFunction.Arn
+      Action: lambda:InvokeFunctionUrl
+      Principal: '*'
+      FunctionUrlAuthType: NONE
+
+  # ── API Gateway HTTP API (v2) ──────────────────────────────────────────────
+
+  HttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub librechat-api-${Environment}
+      ProtocolType: HTTP
+
+  LambdaIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LibreChatApiFunction.Arn}/invocations
+      PayloadFormatVersion: '2.0'
+      TimeoutInMillis: 29000
+
+  DefaultRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: $default
+      Target: !Sub integrations/${LambdaIntegration}
+
+  ApiAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/apigateway/librechat-${Environment}
+      RetentionInDays: 30
+
+  ApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref HttpApi
+      StageName: $default
+      AutoDeploy: true
+      AccessLogSettings:
+        DestinationArn: !GetAtt ApiAccessLogGroup.Arn
+        Format: '{"requestId":"$context.requestId","ip":"$context.identity.sourceIp","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","routeKey":"$context.routeKey","status":"$context.status","protocol":"$context.protocol","responseLength":"$context.responseLength","integrationLatency":"$context.integrationLatency"}'
+      DefaultRouteSettings:
+        DetailedMetricsEnabled: true
+
+  # Allow API Gateway to invoke the Lambda function
+  ApiGatewayLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt LibreChatApiFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*
+
+Outputs:
+  LambdaFunctionName:
+    Value: !Ref LibreChatApiFunction
+    Export:
+      Name: !Sub ${AWS::StackName}-LambdaFunctionName
+
+  LambdaFunctionArn:
+    Value: !GetAtt LibreChatApiFunction.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-LambdaFunctionArn
+
+  APIGatewayURL:
+    Value: !Sub https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com
+    Export:
+      Name: !Sub ${AWS::StackName}-APIGatewayURL
+
+  APIGatewayId:
+    Value: !Ref HttpApi
+    Export:
+      Name: !Sub ${AWS::StackName}-APIGatewayId
+
+  LambdaFunctionUrl:
+    Value: !GetAtt LibreChatApiFunctionUrl.FunctionUrl
+    Export:
+      Name: !Sub ${AWS::StackName}-LambdaFunctionUrl

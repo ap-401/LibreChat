@@ -1,0 +1,25 @@
+version = 0.1
+
+[dev.deploy.parameters]
+stack_name = "librechat-dev"
+region = "us-east-1"
+capabilities = "CAPABILITY_IAM CAPABILITY_AUTO_EXPAND"
+confirm_changeset = false
+resolve_s3 = true
+parameter_overrides = "Environment=dev MultiAZ=false EnableMeiliSearch=false LambdaMemorySize=1024 DocumentDBMode=serverless ElastiCacheNodeType=cache.t4g.small CIPlatform=github-actions"
+
+[staging.deploy.parameters]
+stack_name = "librechat-staging"
+region = "us-east-1"
+capabilities = "CAPABILITY_IAM CAPABILITY_AUTO_EXPAND"
+confirm_changeset = false
+resolve_s3 = true
+parameter_overrides = "Environment=staging MultiAZ=false EnableMeiliSearch=false LambdaMemorySize=1024 DocumentDBMode=provisioned DocumentDBInstanceClass=db.t3.medium ElastiCacheNodeType=cache.t4g.small CIPlatform=github-actions"
+
+[prod.deploy.parameters]
+stack_name = "librechat-prod"
+region = "us-east-1"
+capabilities = "CAPABILITY_IAM CAPABILITY_AUTO_EXPAND"
+confirm_changeset = true
+resolve_s3 = true
+parameter_overrides = "Environment=prod MultiAZ=true EnableMeiliSearch=true LambdaMemorySize=3008 DocumentDBMode=provisioned DocumentDBInstanceClass=db.r6g.large ElastiCacheNodeType=cache.r7g.large CIPlatform=github-actions"

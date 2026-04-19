@@ -1,0 +1,315 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: LibreChat — root SAM template composing all nested stacks
+
+Metadata:
+  cfn-lint:
+    config:
+      ignore_checks:
+        # E3043/E1010: nested templates for future tasks don't exist yet
+        # (ses, observability, meilisearch, mcp, pipeline — tasks 9-13)
+        - E3043
+        - E1010
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+    Description: Deployment environment
+
+  MultiAZ:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: Deploy across two AZs (true) or single AZ (false)
+
+  EnableMeiliSearch:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: Deploy MeiliSearch on ECS Fargate
+
+  CustomDomain:
+    Type: String
+    Default: ''
+    Description: Custom domain name (e.g. chat.example.com)
+
+  HostedZoneId:
+    Type: String
+    Default: ''
+    Description: Route 53 hosted zone ID for the custom domain
+
+  LambdaMemorySize:
+    Type: Number
+    Default: 1024
+    MinValue: 128
+    MaxValue: 10240
+    Description: API Lambda memory in MB
+
+  DocumentDBMode:
+    Type: String
+    Default: provisioned
+    AllowedValues: [provisioned, serverless]
+    Description: DocumentDB mode — provisioned (fixed instance) or serverless (auto-scaling ACUs)
+
+  DocumentDBInstanceClass:
+    Type: String
+    Default: db.t3.medium
+    Description: DocumentDB instance class (used only when DocumentDBMode=provisioned)
+
+  ElastiCacheNodeType:
+    Type: String
+    Default: cache.t4g.small
+    Description: ElastiCache node type
+
+  CIPlatform:
+    Type: String
+    Default: github-actions
+    AllowedValues: [github-actions, codepipeline]
+    Description: CI/CD platform
+
+  CodeStarConnectionArn:
+    Type: String
+    Default: ''
+    Description: ARN of the CodeStar Connections connection (required when CIPlatform=codepipeline)
+
+  RepositoryId:
+    Type: String
+    Default: ''
+    Description: Repository identifier e.g. my-org/librechat (required when CIPlatform=codepipeline)
+
+  BranchName:
+    Type: String
+    Default: main
+    Description: Branch to trigger the pipeline on
+
+Conditions:
+  EnableMeiliSearchCondition: !Equals [!Ref EnableMeiliSearch, 'true']
+  UseCodePipeline: !Equals [!Ref CIPlatform, codepipeline]
+
+Resources:
+
+  # ── VPC & Networking ──────────────────────────────────────────────────────
+  VPCStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: nested/vpc.yaml
+      Parameters:
+        Environment: !Ref Environment
+        MultiAZ: !Ref MultiAZ
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ── Secrets Manager + SSM Parameter Store ────────────────────────────────
+  SecretsStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: nested/secrets.yaml
+      Parameters:
+        Environment: !Ref Environment
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ── DocumentDB ────────────────────────────────────────────────────────────
+  DatabaseStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: nested/database.yaml
+      Parameters:
+        Environment: !Ref Environment
+        MultiAZ: !Ref MultiAZ
+        DocumentDBMode: !Ref DocumentDBMode
+        DocumentDBInstanceClass: !Ref DocumentDBInstanceClass
+        VpcId: !GetAtt VPCStack.Outputs.VpcId
+        PrivateSubnet1Id: !GetAtt VPCStack.Outputs.PrivateSubnet1Id
+        PrivateSubnet2Id: !GetAtt VPCStack.Outputs.PrivateSubnet2Id
+        DocDBSecurityGroupId: !GetAtt VPCStack.Outputs.DocDBSecurityGroupId
+        SecretArn: !GetAtt SecretsStack.Outputs.SecretArn
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ── ElastiCache ───────────────────────────────────────────────────────────
+  CacheStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: nested/cache.yaml
+      Parameters:
+        Environment: !Ref Environment
+        MultiAZ: !Ref MultiAZ
+        ElastiCacheNodeType: !Ref ElastiCacheNodeType
+        PrivateSubnet1Id: !GetAtt VPCStack.Outputs.PrivateSubnet1Id
+        PrivateSubnet2Id: !GetAtt VPCStack.Outputs.PrivateSubnet2Id
+        RedisSecurityGroupId: !GetAtt VPCStack.Outputs.RedisSecurityGroupId
+        SecretArn: !GetAtt SecretsStack.Outputs.SecretArn
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ── S3 Uploads Bucket ─────────────────────────────────────────────────────
+  StorageStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: nested/storage.yaml
+      Parameters:
+        Environment: !Ref Environment
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ── S3 Frontend Bucket + CloudFront + WAF + ACM + Route 53 ───────────────
+  FrontendStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: nested/frontend.yaml
+      Parameters:
+        Environment: !Ref Environment
+        CustomDomain: !Ref CustomDomain
+        HostedZoneId: !Ref HostedZoneId
+        APIGatewayURL: !GetAtt APILambdaStack.Outputs.APIGatewayURL
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ── SES ───────────────────────────────────────────────────────────────────
+  SESStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: nested/ses.yaml
+      Parameters:
+        Environment: !Ref Environment
+        CustomDomain: !Ref CustomDomain
+        HostedZoneId: !Ref HostedZoneId
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ── Lambda API + API Gateway ──────────────────────────────────────────────
+  APILambdaStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: CacheStack
+    Properties:
+      TemplateURL: nested/api-lambda.yaml
+      Parameters:
+        Environment: !Ref Environment
+        LambdaMemorySize: !Ref LambdaMemorySize
+        VpcId: !GetAtt VPCStack.Outputs.VpcId
+        PrivateSubnet1Id: !GetAtt VPCStack.Outputs.PrivateSubnet1Id
+        PrivateSubnet2Id: !GetAtt VPCStack.Outputs.PrivateSubnet2Id
+        LambdaSecurityGroupId: !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SecretArn: !GetAtt SecretsStack.Outputs.SecretArn
+        UploadsBucketName: !GetAtt StorageStack.Outputs.UploadsBucketName
+        UploadsBucketArn: !GetAtt StorageStack.Outputs.UploadsBucketArn
+        SESIdentityArn: !GetAtt SESStack.Outputs.SESIdentityArn
+        DocDBCALayerArn: !GetAtt DatabaseStack.Outputs.DocDBCALayerArn
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ── Observability ─────────────────────────────────────────────────────────
+  ObservabilityStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: nested/observability.yaml
+      Parameters:
+        Environment: !Ref Environment
+        LambdaFunctionName: !GetAtt APILambdaStack.Outputs.LambdaFunctionName
+        APIGatewayId: !GetAtt APILambdaStack.Outputs.APIGatewayId
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ── MeiliSearch (optional) ────────────────────────────────────────────────
+  MeiliSearchStack:
+    Type: AWS::CloudFormation::Stack
+    Condition: EnableMeiliSearchCondition
+    Properties:
+      TemplateURL: nested/meilisearch.yaml
+      Parameters:
+        Environment: !Ref Environment
+        EnableMeiliSearch: !Ref EnableMeiliSearch
+        VpcId: !GetAtt VPCStack.Outputs.VpcId
+        PrivateSubnet1Id: !GetAtt VPCStack.Outputs.PrivateSubnet1Id
+        PrivateSubnet2Id: !GetAtt VPCStack.Outputs.PrivateSubnet2Id
+        MeiliSecurityGroupId: !GetAtt VPCStack.Outputs.MeiliSecurityGroupId
+        SecretArn: !GetAtt SecretsStack.Outputs.SecretArn
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ── MCP Lambda Functions ──────────────────────────────────────────────────
+  MCPStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: mcp/template.yaml
+      Parameters:
+        Environment: !Ref Environment
+        VpcId: !GetAtt VPCStack.Outputs.VpcId
+        PrivateSubnet1Id: !GetAtt VPCStack.Outputs.PrivateSubnet1Id
+        PrivateSubnet2Id: !GetAtt VPCStack.Outputs.PrivateSubnet2Id
+        MCPSecurityGroupId: !GetAtt VPCStack.Outputs.MCPSecurityGroupId
+        SecretArn: !GetAtt SecretsStack.Outputs.SecretArn
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ── CodePipeline (conditional) ────────────────────────────────────────────
+  PipelineStack:
+    Type: AWS::CloudFormation::Stack
+    Condition: UseCodePipeline
+    Properties:
+      TemplateURL: nested/pipeline.yaml
+      Parameters:
+        Environment: !Ref Environment
+        CodeStarConnectionArn: !Ref CodeStarConnectionArn
+        RepositoryId: !Ref RepositoryId
+        BranchName: !Ref BranchName
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+Outputs:
+  CloudFrontURL:
+    Description: CloudFront distribution domain name
+    Value: !GetAtt FrontendStack.Outputs.CloudFrontURL
+    Export:
+      Name: !Sub librechat-${Environment}-CloudFrontURL
+
+  APIGatewayURL:
+    Description: API Gateway invoke URL
+    Value: !GetAtt APILambdaStack.Outputs.APIGatewayURL
+    Export:
+      Name: !Sub librechat-${Environment}-APIGatewayURL
+
+  FrontendBucketName:
+    Description: S3 bucket name for frontend assets
+    Value: !GetAtt FrontendStack.Outputs.FrontendBucketName
+    Export:
+      Name: !Sub librechat-${Environment}-FrontendBucketName
+
+  UploadsBucketName:
+    Description: S3 bucket name for user uploads
+    Value: !GetAtt StorageStack.Outputs.UploadsBucketName
+    Export:
+      Name: !Sub librechat-${Environment}-UploadsBucketName
+
+  DocumentDBEndpoint:
+    Description: DocumentDB cluster endpoint
+    Value: !GetAtt DatabaseStack.Outputs.DocumentDBEndpoint
+    Export:
+      Name: !Sub librechat-${Environment}-DocumentDBEndpoint
+
+  ElastiCacheEndpoint:
+    Description: ElastiCache primary endpoint
+    Value: !GetAtt CacheStack.Outputs.ElastiCacheEndpoint
+    Export:
+      Name: !Sub librechat-${Environment}-ElastiCacheEndpoint
+
+  CloudFrontDistributionId:
+    Description: CloudFront distribution ID (for cache invalidation)
+    Value: !GetAtt FrontendStack.Outputs.CloudFrontDistributionId
+    Export:
+      Name: !Sub librechat-${Environment}-CloudFrontDistributionId

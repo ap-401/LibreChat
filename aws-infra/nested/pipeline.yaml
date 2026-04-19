@@ -1,0 +1,395 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  LibreChat — AWS CodePipeline CI/CD pipeline (conditional on CIPlatform=codepipeline).
+  Stages: Source (CodeStar) → Build (CodeBuild) → [Approval if prod] → Deploy (CloudFormation) → Post-Deploy (CodeBuild).
+  Requirements: 12.3, 12.5
+
+Parameters:
+  Environment:
+    Type: String
+    AllowedValues: [dev, staging, prod]
+  CodeStarConnectionArn:
+    Type: String
+    Description: ARN of the CodeStar Connections connection
+  RepositoryId:
+    Type: String
+    Description: Repository identifier (e.g. my-org/librechat)
+  BranchName:
+    Type: String
+    Default: main
+
+Conditions:
+  IsProd: !Equals [!Ref Environment, prod]
+
+Resources:
+
+  # ── Pipeline Artifacts Bucket ─────────────────────────────────────────────
+  PipelineArtifactsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub librechat-pipeline-${AWS::AccountId}-${Environment}
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireOldArtifacts
+            Status: Enabled
+            ExpirationInDays: 30
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ── CodeBuild — Build Stage ───────────────────────────────────────────────
+  BuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub librechat-build-${Environment}
+      Description: Build and test LibreChat (npm ci, test, frontend build, sam build)
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_MEDIUM
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
+        EnvironmentVariables:
+          - Name: ENVIRONMENT
+            Value: !Ref Environment
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            install:
+              runtime-versions:
+                nodejs: 20
+              commands:
+                - npm ci
+            pre_build:
+              commands:
+                - npm test --workspace=api
+            build:
+              commands:
+                - npm run frontend
+                - cd aws-infra && sam build --config-env ${ENVIRONMENT}
+          artifacts:
+            files:
+              - '**/*'
+            base-directory: '.'
+      TimeoutInMinutes: 30
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ── CodeBuild — Post-Deploy Stage ─────────────────────────────────────────
+  PostDeployProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub librechat-postdeploy-${Environment}
+      Description: Post-deploy tasks (S3 sync, CloudFront invalidation, smoke tests)
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
+        EnvironmentVariables:
+          - Name: ENVIRONMENT
+            Value: !Ref Environment
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            install:
+              runtime-versions:
+                nodejs: 20
+            build:
+              commands:
+                - bash aws-infra/scripts/build-frontend.sh ${ENVIRONMENT}
+                - bash aws-infra/scripts/invalidate-cf.sh ${ENVIRONMENT}
+                - bash aws-infra/scripts/smoke-test.sh ${ENVIRONMENT}
+      TimeoutInMinutes: 15
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ── CodePipeline ──────────────────────────────────────────────────────────
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub librechat-${Environment}
+      RoleArn: !GetAtt PipelineServiceRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref PipelineArtifactsBucket
+      Stages:
+        # ── Source Stage ──────────────────────────────────────────────────
+        - Name: Source
+          Actions:
+            - Name: SourceAction
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeStarSourceConnection
+                Version: '1'
+              Configuration:
+                ConnectionArn: !Ref CodeStarConnectionArn
+                FullRepositoryId: !Ref RepositoryId
+                BranchName: !Ref BranchName
+                OutputArtifactFormat: CODE_ZIP
+              OutputArtifacts:
+                - Name: SourceOutput
+              RunOrder: 1
+
+        # ── Build Stage ───────────────────────────────────────────────────
+        - Name: Build
+          Actions:
+            - Name: BuildAction
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              Configuration:
+                ProjectName: !Ref BuildProject
+              InputArtifacts:
+                - Name: SourceOutput
+              OutputArtifacts:
+                - Name: BuildOutput
+              RunOrder: 1
+
+        # ── Manual Approval (prod only) ───────────────────────────────────
+        - !If
+          - IsProd
+          - Name: Approval
+            Actions:
+              - Name: ManualApproval
+                ActionTypeId:
+                  Category: Approval
+                  Owner: AWS
+                  Provider: Manual
+                  Version: '1'
+                Configuration:
+                  CustomData: !Sub 'Approve deployment to ${Environment}?'
+                RunOrder: 1
+          - !Ref AWS::NoValue
+
+        # ── Deploy Stage (CloudFormation / SAM) ───────────────────────────
+        - Name: Deploy
+          Actions:
+            - Name: CreateChangeSet
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: '1'
+              Configuration:
+                ActionMode: CHANGE_SET_REPLACE
+                StackName: !Sub librechat-${Environment}
+                ChangeSetName: !Sub librechat-${Environment}-changeset
+                TemplatePath: BuildOutput::aws-infra/.aws-sam/build/template.yaml
+                Capabilities: CAPABILITY_IAM,CAPABILITY_AUTO_EXPAND
+                RoleArn: !GetAtt CloudFormationDeployRole.Arn
+                ParameterOverrides: !Sub '{"Environment":"${Environment}"}'
+              InputArtifacts:
+                - Name: BuildOutput
+              RunOrder: 1
+            - Name: ExecuteChangeSet
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: '1'
+              Configuration:
+                ActionMode: CHANGE_SET_EXECUTE
+                StackName: !Sub librechat-${Environment}
+                ChangeSetName: !Sub librechat-${Environment}-changeset
+              RunOrder: 2
+
+        # ── Post-Deploy Stage ─────────────────────────────────────────────
+        - Name: PostDeploy
+          Actions:
+            - Name: PostDeployAction
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              Configuration:
+                ProjectName: !Ref PostDeployProject
+              InputArtifacts:
+                - Name: BuildOutput
+              RunOrder: 1
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ── IAM: CodeBuild Service Role ───────────────────────────────────────────
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub librechat-codebuild-${Environment}
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodeBuildBasePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # CloudWatch Logs
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/librechat-*
+                  - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/librechat-*:*
+              # Pipeline artifacts bucket
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:GetBucketLocation
+                Resource:
+                  - !GetAtt PipelineArtifactsBucket.Arn
+                  - !Sub ${PipelineArtifactsBucket.Arn}/*
+              # SAM CLI managed bucket (for sam build/deploy)
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                  - s3:CreateBucket
+                  - s3:GetBucketLocation
+                Resource:
+                  - arn:aws:s3:::aws-sam-cli-managed-*
+                  - arn:aws:s3:::aws-sam-cli-managed-*/*
+        - PolicyName: PostDeployPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # S3 sync for frontend assets
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub arn:aws:s3:::librechat-frontend-${AWS::AccountId}-${Environment}
+                  - !Sub arn:aws:s3:::librechat-frontend-${AWS::AccountId}-${Environment}/*
+              # CloudFront invalidation
+              - Effect: Allow
+                Action:
+                  - cloudfront:CreateInvalidation
+                Resource: '*'
+              # CloudFormation describe (for scripts that read stack outputs)
+              - Effect: Allow
+                Action:
+                  - cloudformation:DescribeStacks
+                Resource:
+                  - !Sub arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/librechat-${Environment}/*
+
+  # ── IAM: CodePipeline Service Role ────────────────────────────────────────
+  PipelineServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub librechat-pipeline-${Environment}
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: PipelinePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # CodeBuild
+              - Effect: Allow
+                Action:
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+                Resource:
+                  - !GetAtt BuildProject.Arn
+                  - !GetAtt PostDeployProject.Arn
+              # CloudFormation
+              - Effect: Allow
+                Action:
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:DescribeStacks
+                Resource:
+                  - !Sub arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/librechat-${Environment}/*
+              # S3 artifacts
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:GetBucketVersioning
+                Resource:
+                  - !GetAtt PipelineArtifactsBucket.Arn
+                  - !Sub ${PipelineArtifactsBucket.Arn}/*
+              # CodeStar Connections
+              - Effect: Allow
+                Action:
+                  - codestar-connections:UseConnection
+                Resource: !Ref CodeStarConnectionArn
+              # IAM PassRole (for CloudFormation deploy role)
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt CloudFormationDeployRole.Arn
+
+  # ── IAM: CloudFormation Deploy Role ───────────────────────────────────────
+  CloudFormationDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub librechat-cfn-deploy-${Environment}
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudformation.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        # CloudFormation needs broad permissions to create/update/delete stack resources.
+        # Scoping is enforced at the pipeline level (only librechat-{env} stacks).
+        - arn:aws:iam::aws:policy/AdministratorAccess
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+Outputs:
+  PipelineName:
+    Description: CodePipeline pipeline name
+    Value: !Ref Pipeline
+
+  PipelineArtifactsBucketName:
+    Description: S3 bucket for pipeline artifacts
+    Value: !Ref PipelineArtifactsBucket
+
+  PipelineUrl:
+    Description: URL to the CodePipeline console
+    Value: !Sub https://${AWS::Region}.console.aws.amazon.com/codesuite/codepipeline/pipelines/librechat-${Environment}/view

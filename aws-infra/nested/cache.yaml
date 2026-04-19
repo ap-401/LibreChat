@@ -1,0 +1,80 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: LibreChat — Amazon ElastiCache (Valkey/Redis) cluster and subnet group
+
+Parameters:
+  Environment:
+    Type: String
+
+  MultiAZ:
+    Type: String
+    Default: 'true'
+
+  ElastiCacheNodeType:
+    Type: String
+    Default: cache.t4g.small
+
+  PrivateSubnet1Id:
+    Type: String
+
+  PrivateSubnet2Id:
+    Type: String
+
+  RedisSecurityGroupId:
+    Type: String
+
+  SecretArn:
+    Type: String
+
+Conditions:
+  IsMultiAZ: !Equals [!Ref MultiAZ, 'true']
+
+Resources:
+
+  # ── Subnet Group ──────────────────────────────────────────────────────────────
+  ElastiCacheSubnetGroup:
+    Type: AWS::ElastiCache::SubnetGroup
+    Properties:
+      Description: !Sub 'LibreChat ElastiCache subnet group (${Environment})'
+      SubnetIds:
+        - !Ref PrivateSubnet1Id
+        - !If [IsMultiAZ, !Ref PrivateSubnet2Id, !Ref PrivateSubnet1Id]
+
+  # ── Replication Group ─────────────────────────────────────────────────────────
+  ElastiCacheReplicationGroup:
+    Type: AWS::ElastiCache::ReplicationGroup
+    Properties:
+      ReplicationGroupDescription: !Sub 'LibreChat Redis/Valkey cache (${Environment})'
+      Engine: valkey
+      EngineVersion: '7.2'
+      CacheNodeType: !Ref ElastiCacheNodeType
+      CacheSubnetGroupName: !Ref ElastiCacheSubnetGroup
+      SecurityGroupIds:
+        - !Ref RedisSecurityGroupId
+      # Cluster mode disabled — single shard
+      NumCacheClusters: !If [IsMultiAZ, 2, 1]
+      AutomaticFailoverEnabled: !If [IsMultiAZ, true, false]
+      MultiAZEnabled: !If [IsMultiAZ, true, false]
+      # Encryption
+      TransitEncryptionEnabled: true
+      AtRestEncryptionEnabled: true
+      # Auth token pulled from Secrets Manager via dynamic reference
+      AuthToken: !Sub '{{resolve:secretsmanager:${SecretArn}:SecretString:REDIS_AUTH_TOKEN}}'
+      # Logging / tags
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Application
+          Value: librechat
+
+Outputs:
+  ElastiCacheEndpoint:
+    Description: ElastiCache primary endpoint address
+    Value: !GetAtt ElastiCacheReplicationGroup.PrimaryEndPoint.Address
+    Export:
+      Name: !Sub '${AWS::StackName}-ElastiCacheEndpoint'
+
+  ElastiCachePort:
+    Description: ElastiCache port
+    Value: !GetAtt ElastiCacheReplicationGroup.PrimaryEndPoint.Port
+    Export:
+      Name: !Sub '${AWS::StackName}-ElastiCachePort'

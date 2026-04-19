@@ -1,0 +1,80 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: LibreChat — Amazon SES email identity and DKIM DNS records
+
+Parameters:
+  Environment:
+    Type: String
+
+  CustomDomain:
+    Type: String
+    Default: ""
+    Description: Sender domain for SES identity. If empty, a placeholder is used.
+
+  HostedZoneId:
+    Type: String
+    Default: ""
+    Description: Route 53 hosted zone ID for DKIM DNS record creation.
+
+Conditions:
+  HasCustomDomain: !Not [!Equals [!Ref CustomDomain, ""]]
+
+Resources:
+
+  # SES Email Identity — uses the custom domain when provided, otherwise a placeholder.
+  # Operators must update the placeholder domain and re-deploy to enable real email delivery.
+  SESEmailIdentity:
+    Type: AWS::SES::EmailIdentity
+    Properties:
+      EmailIdentity: !If [HasCustomDomain, !Ref CustomDomain, "placeholder.example.com"]
+      DkimAttributes:
+        SigningEnabled: true
+
+  # DKIM CNAME records — only created when a real domain and hosted zone are provided.
+  # AWS::SES::EmailIdentity exposes three token pairs via GetAtt:
+  #   DkimDNSTokenName1/2/3  and  DkimDNSTokenValue1/2/3
+  DkimRecordSetGroup:
+    Type: AWS::Route53::RecordSetGroup
+    Condition: HasCustomDomain
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      RecordSets:
+        - Name: !Sub
+            - "${Token}._domainkey.${Domain}"
+            - Token: !GetAtt SESEmailIdentity.DkimDNSTokenName1
+              Domain: !Ref CustomDomain
+          Type: CNAME
+          TTL: "1800"
+          ResourceRecords:
+            - !Sub "${SESEmailIdentity.DkimDNSTokenValue1}.dkim.amazonses.com"
+        - Name: !Sub
+            - "${Token}._domainkey.${Domain}"
+            - Token: !GetAtt SESEmailIdentity.DkimDNSTokenName2
+              Domain: !Ref CustomDomain
+          Type: CNAME
+          TTL: "1800"
+          ResourceRecords:
+            - !Sub "${SESEmailIdentity.DkimDNSTokenValue2}.dkim.amazonses.com"
+        - Name: !Sub
+            - "${Token}._domainkey.${Domain}"
+            - Token: !GetAtt SESEmailIdentity.DkimDNSTokenName3
+              Domain: !Ref CustomDomain
+          Type: CNAME
+          TTL: "1800"
+          ResourceRecords:
+            - !Sub "${SESEmailIdentity.DkimDNSTokenValue3}.dkim.amazonses.com"
+
+Outputs:
+
+  SESIdentityArn:
+    Description: ARN of the SES email identity
+    Value: !Sub
+      - "arn:aws:ses:${AWS::Region}:${AWS::AccountId}:identity/${Domain}"
+      - Domain: !If [HasCustomDomain, !Ref CustomDomain, "placeholder.example.com"]
+    Export:
+      Name: !Sub "librechat-${Environment}-SESIdentityArn"
+
+  SESIdentityName:
+    Description: Domain name used for the SES identity
+    Value: !If [HasCustomDomain, !Ref CustomDomain, "placeholder.example.com"]
+    Export:
+      Name: !Sub "librechat-${Environment}-SESIdentityName"
