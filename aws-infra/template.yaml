@@ -193,6 +193,8 @@ Resources:
     DependsOn: CacheStack
     Properties:
       TemplateURL: nested/api-lambda.yaml
+      Capabilities:
+        - CAPABILITY_NAMED_IAM
       Parameters:
         Environment: !Ref Environment
         LambdaMemorySize: !Ref LambdaMemorySize
@@ -228,6 +230,8 @@ Resources:
     Condition: EnableMeiliSearchCondition
     Properties:
       TemplateURL: nested/meilisearch.yaml
+      Capabilities:
+        - CAPABILITY_NAMED_IAM
       Parameters:
         Environment: !Ref Environment
         EnableMeiliSearch: !Ref EnableMeiliSearch
@@ -245,6 +249,8 @@ Resources:
     Type: AWS::CloudFormation::Stack
     Properties:
       TemplateURL: mcp/template.yaml
+      Capabilities:
+        - CAPABILITY_NAMED_IAM
       Parameters:
         Environment: !Ref Environment
         VpcId: !GetAtt VPCStack.Outputs.VpcId
@@ -262,6 +268,8 @@ Resources:
     Condition: UseCodePipeline
     Properties:
       TemplateURL: nested/pipeline.yaml
+      Capabilities:
+        - CAPABILITY_NAMED_IAM
       Parameters:
         Environment: !Ref Environment
         CodeStarConnectionArn: !Ref CodeStarConnectionArn
