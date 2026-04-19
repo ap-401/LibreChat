@@ -34,7 +34,6 @@ Resources:
   LibreChatLambdaRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub librechat-lambda-role-${Environment}
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:

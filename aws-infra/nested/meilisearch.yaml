@@ -81,7 +81,6 @@ Resources:
     Type: AWS::IAM::Role
     Condition: IsMeiliEnabled
     Properties:
-      RoleName: !Sub librechat-meili-exec-${Environment}
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -107,7 +106,6 @@ Resources:
     Type: AWS::IAM::Role
     Condition: IsMeiliEnabled
     Properties:
-      RoleName: !Sub librechat-meili-task-${Environment}
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:

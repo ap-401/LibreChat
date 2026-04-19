@@ -38,7 +38,6 @@ Resources:
   GitHubActionsDeployRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub librechat-github-deploy-${Environment}
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:

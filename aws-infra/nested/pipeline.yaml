@@ -239,7 +239,6 @@ Resources:
   CodeBuildServiceRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub librechat-codebuild-${Environment}
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -311,7 +310,6 @@ Resources:
   PipelineServiceRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub librechat-pipeline-${Environment}
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -365,7 +363,6 @@ Resources:
   CloudFormationDeployRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub librechat-cfn-deploy-${Environment}
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
