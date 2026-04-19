@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
-  LibreChat — GitHub Actions OIDC provider and deploy IAM role.
+  LibreChat - GitHub Actions OIDC provider and deploy IAM role.
   Deploy this stack once per AWS account to enable keyless GitHub Actions deployments.
   Requirements: 7.6, 12.3
 

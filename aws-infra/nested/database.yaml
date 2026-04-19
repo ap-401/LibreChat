@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: LibreChat — Amazon DocumentDB cluster, subnet group, parameter group, and CA bundle layer
+Description: LibreChat - Amazon DocumentDB cluster, subnet group, parameter group, and CA bundle layer
 
 Parameters:
   Environment:
@@ -53,7 +53,7 @@ Resources:
   DocDBClusterParameterGroup:
     Type: AWS::DocDB::DBClusterParameterGroup
     Properties:
-      Description: !Sub 'LibreChat DocumentDB parameter group (${Environment}) — TLS enabled'
+      Description: !Sub 'LibreChat DocumentDB parameter group (${Environment}) - TLS enabled'
       Family: docdb5.0
       Parameters:
         tls: enabled

@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
-  LibreChat — AWS CodePipeline CI/CD pipeline (conditional on CIPlatform=codepipeline).
-  Stages: Source (CodeStar) → Build (CodeBuild) → [Approval if prod] → Deploy (CloudFormation) → Post-Deploy (CodeBuild).
+  LibreChat - AWS CodePipeline CI/CD pipeline (conditional on CIPlatform=codepipeline).
+  Stages: Source (CodeStar) -> Build (CodeBuild) -> [Approval if prod] -> Deploy (CloudFormation) -> Post-Deploy (CodeBuild).
   Requirements: 12.3, 12.5
 
 Parameters:

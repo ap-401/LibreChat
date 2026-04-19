@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: LibreChat — S3 uploads bucket for user-uploaded files
+Description: LibreChat - S3 uploads bucket for user-uploaded files
 
 Parameters:
   Environment:

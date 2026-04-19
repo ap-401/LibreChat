@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: LibreChat — VPC, subnets, NAT gateways, and security groups
+Description: LibreChat - VPC, subnets, NAT gateways, and security groups
 
 Parameters:
   Environment:
@@ -53,7 +53,6 @@ Resources:
 
   PublicSubnet2:
     Type: AWS::EC2::Subnet
-    Condition: IsMultiAZ
     Properties:
       VpcId: !Ref VPC
       CidrBlock: 10.0.1.0/24
@@ -77,7 +76,6 @@ Resources:
 
   PrivateSubnet2:
     Type: AWS::EC2::Subnet
-    Condition: IsMultiAZ
     Properties:
       VpcId: !Ref VPC
       CidrBlock: 10.0.3.0/24
@@ -112,7 +110,6 @@ Resources:
 
   PublicSubnet2RouteTableAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
-    Condition: IsMultiAZ
     Properties:
       SubnetId: !Ref PublicSubnet2
       RouteTableId: !Ref PublicRouteTable
@@ -176,7 +173,6 @@ Resources:
 
   PrivateRouteTable2:
     Type: AWS::EC2::RouteTable
-    Condition: IsMultiAZ
     Properties:
       VpcId: !Ref VPC
       Tags:
@@ -185,15 +181,13 @@ Resources:
 
   PrivateRoute2:
     Type: AWS::EC2::Route
-    Condition: IsMultiAZ
     Properties:
       RouteTableId: !Ref PrivateRouteTable2
       DestinationCidrBlock: 0.0.0.0/0
-      NatGatewayId: !Ref NatGateway2
+      NatGatewayId: !If [IsMultiAZ, !Ref NatGateway2, !Ref NatGateway1]
 
   PrivateSubnet2RouteTableAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
-    Condition: IsMultiAZ
     Properties:
       SubnetId: !Ref PrivateSubnet2
       RouteTableId: !Ref PrivateRouteTable2
@@ -370,7 +364,7 @@ Outputs:
       Name: !Sub librechat-${Environment}-PublicSubnet1Id
 
   PublicSubnet2Id:
-    Value: !If [IsMultiAZ, !Ref PublicSubnet2, !Ref PublicSubnet1]
+    Value: !Ref PublicSubnet2
     Export:
       Name: !Sub librechat-${Environment}-PublicSubnet2Id
 
@@ -380,7 +374,7 @@ Outputs:
       Name: !Sub librechat-${Environment}-PrivateSubnet1Id
 
   PrivateSubnet2Id:
-    Value: !If [IsMultiAZ, !Ref PrivateSubnet2, !Ref PrivateSubnet1]
+    Value: !Ref PrivateSubnet2
     Export:
       Name: !Sub librechat-${Environment}-PrivateSubnet2Id
 

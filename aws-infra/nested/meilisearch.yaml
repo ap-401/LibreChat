@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: LibreChat — MeiliSearch on ECS Fargate with EFS persistence (optional, gated on EnableMeiliSearch)
+Description: LibreChat - MeiliSearch on ECS Fargate with EFS persistence (optional, gated on EnableMeiliSearch)
 
 Parameters:
   Environment:

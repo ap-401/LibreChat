@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: LibreChat — CloudWatch log groups, dashboard, alarms, SNS topic, and X-Ray tracing
+Description: LibreChat - CloudWatch log groups, dashboard, alarms, SNS topic, and X-Ray tracing
 
 Parameters:
   Environment:

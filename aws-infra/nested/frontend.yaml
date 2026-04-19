@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: LibreChat — S3 frontend bucket, CloudFront distribution, WAF, ACM certificate, and Route 53 records
+Description: LibreChat - S3 frontend bucket, CloudFront distribution, WAF, ACM certificate, and Route 53 records
 
 Parameters:
   Environment:
@@ -92,7 +92,7 @@ Resources:
     Properties:
       DistributionConfig:
         Enabled: true
-        Comment: !Sub "LibreChat frontend — ${Environment}"
+        Comment: !Sub "LibreChat frontend - ${Environment}"
         DefaultRootObject: index.html
         HttpVersion: http2
         IPV6Enabled: true

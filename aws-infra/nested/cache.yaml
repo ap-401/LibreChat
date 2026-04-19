@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: LibreChat — Amazon ElastiCache (Valkey/Redis) cluster and subnet group
+Description: LibreChat - Amazon ElastiCache (Valkey/Redis) cluster and subnet group
 
 Parameters:
   Environment:
