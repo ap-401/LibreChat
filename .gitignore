@@ -178,3 +178,6 @@ claude-flow
 hive-mind-prompt-*.txt
 CLAUDE.md
 .gsd
+
+# AWS Build files
+/aws-infra/.aws-sam/*
