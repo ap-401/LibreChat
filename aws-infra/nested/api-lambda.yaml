@@ -124,7 +124,7 @@ Resources:
       CodeUri: ../
       Runtime: nodejs22.x
       Architectures:
-        - x86_64
+        - arm64
       MemorySize: !Ref LambdaMemorySize
       Timeout: 30
       Role: !GetAtt LibreChatLambdaRole.Arn

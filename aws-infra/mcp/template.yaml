@@ -34,7 +34,7 @@ Globals:
     Timeout: 60
     MemorySize: 256
     Architectures:
-      - x86_64
+      - arm64
     VpcConfig:
       SubnetIds:
         - !Ref PrivateSubnet1Id
