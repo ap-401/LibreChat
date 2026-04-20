@@ -25,6 +25,7 @@ npm ci
 
 # ── Step 2: Build the React frontend ────────────────────────────────────────
 echo "==> Building frontend (npm run frontend)..."
+export NODE_OPTIONS="--max-old-space-size=4096"
 npm run frontend
 
 # ── Step 3: Look up the frontend S3 bucket name from CloudFormation outputs ─
