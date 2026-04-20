@@ -53,7 +53,7 @@ Resources:
     Type: AWS::DocDB::DBClusterParameterGroup
     Properties:
       Description: !Sub 'LibreChat DocumentDB parameter group (${Environment}) - TLS enabled'
-      Family: docdb8.0
+      Family: docdb5.0
       Parameters:
         tls: enabled
       Tags:
@@ -101,7 +101,7 @@ Resources:
     Type: AWS::DocDB::DBCluster
     Properties:
       DBClusterIdentifier: !Sub 'librechat-${Environment}'
-      EngineVersion: '8.0.0'
+      EngineVersion: '5.0.0'
       DBSubnetGroupName: !Ref DocDBSubnetGroup
       DBClusterParameterGroupName: !Ref DocDBClusterParameterGroup
       VpcSecurityGroupIds:
