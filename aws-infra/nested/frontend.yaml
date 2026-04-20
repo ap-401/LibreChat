@@ -130,10 +130,6 @@ Resources:
               HTTPSPort: 443
               OriginProtocolPolicy: https-only
               OriginSSLProtocols: [TLSv1.2]
-            OriginPath: !Join
-              - ""
-              - - "/"
-                - !Select [3, !Split ["/", !Ref APIGatewayURL]]
 
         # Cache behaviors
         CacheBehaviors:
