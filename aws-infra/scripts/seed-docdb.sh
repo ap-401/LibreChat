@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # seed-docdb.sh — Seed DocumentDB with the LibreChat database and indexes
 #
-# Usage: ./seed-docdb.sh [environment]
+# Usage: ./seed-docdb.sh [environment] [--profile PROFILE]
 #   environment: dev | staging | prod (default: dev)
+#   --profile:   AWS CLI profile name (optional)
 #
 # This script:
 #   1. Retrieves MONGO_URI from Secrets Manager (librechat/{env}/secrets)
@@ -14,12 +15,19 @@
 #     environment, or CI runner with VPC connectivity)
 #   - Node.js and npm available
 #   - The mongoose package (installed via npm ci at repo root)
-#
-# Requirements: 3.6
 
 set -euo pipefail
 
 ENV="${1:-dev}"
+shift || true
+PROFILE_ARG=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --profile) PROFILE_ARG="--profile $2"; shift 2 ;;
+    *) echo "Unknown option: $1" >&2; exit 1 ;;
+  esac
+done
+
 SECRET_NAME="librechat/${ENV}/secrets"
 
 echo "==> Seeding DocumentDB for environment: ${ENV}"
@@ -27,6 +35,7 @@ echo "==> Seeding DocumentDB for environment: ${ENV}"
 # ── Step 1: Retrieve MONGO_URI from Secrets Manager ─────────────────────────
 echo "==> Retrieving MONGO_URI from Secrets Manager (${SECRET_NAME})..."
 MONGO_URI=$(aws secretsmanager get-secret-value \
+  ${PROFILE_ARG} \
   --secret-id "${SECRET_NAME}" \
   --query "SecretString" \
   --output text | node -e "
@@ -97,6 +106,6 @@ seed().catch((err) => {
   console.error('Seed failed:', err.message);
   process.exit(1);
 });
-" 
+"
 
 echo "==> DocumentDB seeding complete."

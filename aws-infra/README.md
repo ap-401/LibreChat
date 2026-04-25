@@ -20,7 +20,7 @@ This directory contains the complete AWS SAM infrastructure-as-code for deployin
 
 - [AWS SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html) installed
 - [AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) configured with appropriate credentials
-- Node.js 20.x
+- Node.js 22.x
 - Docker (for `sam build --use-container` if needed)
 
 ## Directory Structure
@@ -49,7 +49,8 @@ aws-infra/
 │   ├── build-frontend.sh
 │   ├── invalidate-cf.sh
 │   ├── seed-docdb.sh
-│   └── smoke-test.sh
+│   ├── smoke-test.sh
+│   └── sync-secrets.sh
 ├── layers/                    # Lambda layers
 │   └── docdb-ca/              # DocumentDB CA bundle
 └── lambda-bootstrap/          # Cold-start secret loader
@@ -82,22 +83,30 @@ sam build --config-env dev
 sam deploy --config-env dev
 ```
 
-### 4. Sync frontend assets
+### 4. Sync secrets from infrastructure outputs
 
 ```bash
-bash aws-infra/scripts/build-frontend.sh dev
+bash aws-infra/scripts/sync-secrets.sh dev --profile personal
 ```
 
-### 5. Seed the database
+This auto-generates secure random values for passwords and tokens (DOCDB_PASSWORD, REDIS_AUTH_TOKEN, JWT_SECRET, etc.) and assembles MONGO_URI and REDIS_URI from the deployed DocumentDB and ElastiCache endpoints. Only placeholder values are overwritten — any keys you've already manually set are preserved.
+
+### 5. Sync frontend assets
 
 ```bash
-bash aws-infra/scripts/seed-docdb.sh dev
+bash aws-infra/scripts/build-frontend.sh dev --profile personal
 ```
 
-### 6. Run smoke tests
+### 6. Seed the database
 
 ```bash
-bash aws-infra/scripts/smoke-test.sh dev
+bash aws-infra/scripts/seed-docdb.sh dev --profile personal
+```
+
+### 7. Run smoke tests
+
+```bash
+bash aws-infra/scripts/smoke-test.sh dev --profile personal
 ```
 
 ## Environment Configuration
@@ -121,12 +130,25 @@ sam deploy --config-env prod
 
 ### Update Secrets
 
-After the first deploy, update the placeholder secrets in Secrets Manager:
+After the first deploy, run the secrets sync script to auto-populate connection URIs and generate secure tokens:
 
 ```bash
-aws secretsmanager put-secret-value \
-  --secret-id librechat/dev/secrets \
-  --secret-string '{"MONGO_URI":"mongodb://...","REDIS_URI":"rediss://...","JWT_SECRET":"...",...}'
+bash aws-infra/scripts/sync-secrets.sh dev --profile personal
+```
+
+The script:
+- Generates secure random values for any keys still set to placeholders (DOCDB_PASSWORD, REDIS_AUTH_TOKEN, JWT_SECRET, JWT_REFRESH_SECRET, CREDS_KEY, CREDS_IV, MEILI_MASTER_KEY)
+- Assembles MONGO_URI from the DocumentDB endpoint + generated credentials
+- Assembles REDIS_URI from the ElastiCache endpoint + generated auth token
+- Preserves any keys you've already manually configured
+
+You still need to manually set external API keys:
+
+```bash
+# Example: update individual keys via the AWS CLI
+aws secretsmanager get-secret-value --secret-id librechat/dev/secrets --query SecretString --output text \
+  | node -e "let s=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')); s.OPENAI_API_KEY='sk-...'; process.stdout.write(JSON.stringify(s))" \
+  | xargs -0 aws secretsmanager put-secret-value --secret-id librechat/dev/secrets --secret-string
 ```
 
 ### Custom Domain
@@ -164,6 +186,18 @@ sam deploy --config-env prod \
 
 See [scripts/add-mcp-server.md](scripts/add-mcp-server.md) for step-by-step instructions.
 
+## AWS CLI Profile
+
+All scripts accept an optional `--profile` flag to specify which AWS CLI profile to use:
+
+```bash
+bash aws-infra/scripts/build-frontend.sh dev --profile personal
+bash aws-infra/scripts/invalidate-cf.sh prod --profile work
+bash aws-infra/scripts/sync-secrets.sh dev --profile personal
+```
+
+If omitted, the default AWS CLI profile/credentials are used.
+
 ## Useful Commands
 
 ```bash
@@ -171,8 +205,11 @@ See [scripts/add-mcp-server.md](scripts/add-mcp-server.md) for step-by-step inst
 cfn-lint aws-infra/template.yaml aws-infra/nested/*.yaml aws-infra/mcp/template.yaml
 
 # Invalidate CloudFront cache
-bash aws-infra/scripts/invalidate-cf.sh dev
+bash aws-infra/scripts/invalidate-cf.sh dev --profile personal
+
+# Sync secrets after infrastructure changes
+bash aws-infra/scripts/sync-secrets.sh dev --profile personal
 
 # View stack outputs
-aws cloudformation describe-stacks --stack-name librechat-dev --query "Stacks[0].Outputs"
+aws cloudformation describe-stacks --stack-name librechat-dev --query "Stacks[0].Outputs" --profile personal
 ```

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # smoke-test.sh — Post-deployment smoke tests for LibreChat
 #
-# Usage: ./smoke-test.sh [environment]
+# Usage: ./smoke-test.sh [environment] [--profile PROFILE]
 #   environment: dev | staging | prod (default: dev)
+#   --profile:   AWS CLI profile name (optional)
 #
 # This script verifies the deployment is healthy by running:
 #   1. GET /health → assert HTTP 200
@@ -11,12 +12,19 @@
 #   4. HTTP GET / → assert redirect to HTTPS (301/302)
 #
 # Exits non-zero on any failure.
-#
-# Requirements: 12.3
 
 set -euo pipefail
 
 ENV="${1:-dev}"
+shift || true
+PROFILE_ARG=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --profile) PROFILE_ARG="--profile $2"; shift 2 ;;
+    *) echo "Unknown option: $1" >&2; exit 1 ;;
+  esac
+done
+
 STACK_NAME="librechat-${ENV}"
 FAILURES=0
 
@@ -26,11 +34,13 @@ echo "==> Running smoke tests for environment: ${ENV}"
 echo "==> Looking up stack outputs from: ${STACK_NAME}..."
 
 CF_URL=$(aws cloudformation describe-stacks \
+  ${PROFILE_ARG} \
   --stack-name "${STACK_NAME}" \
   --query "Stacks[0].Outputs[?OutputKey=='CloudFrontURL'].OutputValue" \
   --output text)
 
 API_URL=$(aws cloudformation describe-stacks \
+  ${PROFILE_ARG} \
   --stack-name "${STACK_NAME}" \
   --query "Stacks[0].Outputs[?OutputKey=='APIGatewayURL'].OutputValue" \
   --output text)
@@ -81,7 +91,6 @@ CF_BODY=$(echo "${CF_RESPONSE}" | head -n -1)
 CF_STATUS=$(echo "${CF_RESPONSE}" | tail -n 1)
 
 if [[ "${CF_STATUS}" == "200" ]]; then
-  # Check that the response contains index.html markers (e.g. <html, <div id="root")
   if echo "${CF_BODY}" | grep -qi "</html>"; then
     run_test "GET / via CloudFront → 200 with HTML content" "pass" ""
   else
@@ -99,7 +108,6 @@ CONFIG_BODY=$(echo "${CONFIG_RESPONSE}" | head -n -1)
 CONFIG_STATUS=$(echo "${CONFIG_RESPONSE}" | tail -n 1)
 
 if [[ "${CONFIG_STATUS}" == "200" ]]; then
-  # Validate the body is valid JSON
   if echo "${CONFIG_BODY}" | node -e "JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'))" 2>/dev/null; then
     run_test "GET /api/config → 200 with valid JSON" "pass" ""
   else
@@ -112,7 +120,6 @@ fi
 # ── Test 4: HTTP GET / → redirect to HTTPS (301/302) ────────────────────────
 echo ""
 echo "==> Test 4: HTTP → HTTPS redirect"
-# Strip https:// and build an http:// URL for the redirect test
 CF_HOST="${CF_URL#https://}"
 HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "http://${CF_HOST}/" --max-time 15 -L --max-redirs 0 2>/dev/null || echo "000")
 

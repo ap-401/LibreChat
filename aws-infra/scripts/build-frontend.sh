@@ -1,20 +1,28 @@
 #!/usr/bin/env bash
 # build-frontend.sh — Build the React frontend and sync assets to S3
 #
-# Usage: ./build-frontend.sh [environment]
+# Usage: ./build-frontend.sh [environment] [--profile PROFILE]
 #   environment: dev | staging | prod (default: dev)
+#   --profile:   AWS CLI profile name (optional)
 #
 # This script:
 #   1. Installs dependencies with npm ci
 #   2. Builds the frontend with npm run frontend (Vite)
 #   3. Looks up the frontend S3 bucket from CloudFormation stack outputs
 #   4. Syncs client/dist/ to the S3 bucket (with --delete to remove stale files)
-#
-# Requirements: 1.1
 
 set -euo pipefail
 
 ENV="${1:-dev}"
+shift || true
+PROFILE_ARG=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --profile) PROFILE_ARG="--profile $2"; shift 2 ;;
+    *) echo "Unknown option: $1" >&2; exit 1 ;;
+  esac
+done
+
 STACK_NAME="librechat-${ENV}"
 
 echo "==> Building frontend for environment: ${ENV}"
@@ -31,6 +39,7 @@ npm run frontend
 # ── Step 3: Look up the frontend S3 bucket name from CloudFormation outputs ─
 echo "==> Looking up FrontendBucketName from stack: ${STACK_NAME}..."
 BUCKET_NAME=$(aws cloudformation describe-stacks \
+  ${PROFILE_ARG} \
   --stack-name "${STACK_NAME}" \
   --query "Stacks[0].Outputs[?OutputKey=='FrontendBucketName'].OutputValue" \
   --output text)
@@ -44,6 +53,6 @@ echo "==> Frontend bucket: ${BUCKET_NAME}"
 
 # ── Step 4: Sync built assets to S3 ─────────────────────────────────────────
 echo "==> Syncing client/dist/ to s3://${BUCKET_NAME}/ ..."
-aws s3 sync client/dist/ "s3://${BUCKET_NAME}/" --delete
+aws s3 sync client/dist/ "s3://${BUCKET_NAME}/" --delete ${PROFILE_ARG}
 
 echo "==> Frontend build and sync complete."
